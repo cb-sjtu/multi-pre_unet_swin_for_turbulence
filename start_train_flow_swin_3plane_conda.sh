@@ -1,12 +1,12 @@
 #!/bin/bash
-# Training script for flow_swin_3plane model (12-channel version)
+# Training script for flow_swin_3plane model (18-channel version - 6 planes, 3 channels each)
 # Train + evaluate, and make sure evaluation logs go into the SAME run directory.
 
-echo "Starting training for flow_swin_3plane model..."
+echo "Starting training for flow_swin_3plane model (6 planes, 3 channels each)..."
 
 # 1) 训练
 echo "Starting training..."
-python src/train.py --config-name=train_flow_swin_3plane trainer.max_steps=50000 trainer.val_check_interval=300 trainer.limit_val_batches=5
+python src/train.py --config-name=train_flow_swin_3plane trainer.max_steps=10000 trainer.val_check_interval=100 trainer.limit_val_batches=3
 echo "Training completed!"
 
 # 2) 等待 wandb 同步
@@ -50,8 +50,8 @@ mkdir -p "${WANDB_DIR}"
 #（可选）如果你想强制离线写入再手动同步，启用下面这行：
 # export WANDB_MODE=offline
 
-# 5) 评估 - 使用3平面专用evaluation脚本
-echo "Starting 3-plane evaluation..."
+# 5) 评估 - 使用6平面专用evaluation脚本
+echo "Starting 6-plane evaluation..."
 python evaluation_3plane.py "$ABS_CHECKPOINT" --num_samples 3 --num_future 10
 echo "Evaluation finished."
 
@@ -77,4 +77,4 @@ fi
 
 echo "All done! Check:"
 echo " - ${RUN_DIR}/wandb/            # 评估阶段的 W&B 本地缓存"
-echo " - ${RUN_DIR}/evaluation_results # 评估生成的图/视频/文本"
+echo " - ${RUN_DIR}/evaluation_results # 评估生成的图/视频/文本 (6 planes × 3 channels)"

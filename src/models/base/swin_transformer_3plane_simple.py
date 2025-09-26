@@ -250,7 +250,7 @@ class SwinTransformer3PlaneSimple(nn.Module):
 
         # Reshape for temporal conv: (B, T*C, H, W)
         x = einops.rearrange(x, "b t c h w -> b (t c) h w")
-        x = self.temporal_conv(x)
+        # x = self.temporal_conv(x)
 
         # Enhanced patch embedding with channel attention
         # Input: (B, T*C, H, W) -> Output: (B, T, N, embed_dim)

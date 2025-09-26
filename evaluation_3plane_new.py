@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-New modular evaluation script for 3-plane Flow Swin Transformer.
+New modular evaluation script for 6-plane Flow Swin Transformer.
 
-This script adopts the modular architecture from evaluation_new.py for 3-plane models:
+This script adopts the modular architecture from evaluation_new.py for 6-plane models:
 - Separated concerns into different modules
-- Added comprehensive 3-plane visualization
+- Added comprehensive 6-plane visualization
 - Improved code organization and maintainability
 - Fixed WandB step counting issues
 
 Key Features:
 1. Modular and extensible design
-2. 3-plane specific visualizations (12-channel support)
+2. 6-plane specific visualizations (18-channel support)
 3. Proper WandB integration without step conflicts
 4. Multi-modal visualization (plots + videos)
 """
@@ -43,7 +43,7 @@ warnings.filterwarnings("ignore")
 # ========================================
 # 🎯 CONFIGURATION: Modify this value to change prediction length everywhere
 # ========================================
-DEFAULT_FUTURE_STEPS = 100  # Number of future steps to predict for 3-plane
+DEFAULT_FUTURE_STEPS = 100  # Number of future steps to predict for 6-plane
 
 
 def create_3plane_monitor_points():
@@ -71,7 +71,7 @@ def create_3plane_monitor_points():
     return custom_points
 
 
-def run_comprehensive_3plane_evaluation(
+def run_comprehensive_6plane_evaluation(
     checkpoint_path: str,
     save_predictions: bool = False,
     custom_points: bool = True,
@@ -80,7 +80,7 @@ def run_comprehensive_3plane_evaluation(
     output_dir: str = "evaluation_3plane_outputs",
 ):
     """
-    Run comprehensive 3-plane flow model evaluation.
+    Run comprehensive 6-plane flow model evaluation.
 
     Args:
         checkpoint_path: Path to model checkpoint
@@ -90,7 +90,7 @@ def run_comprehensive_3plane_evaluation(
         num_future_steps: Number of future steps to predict
         output_dir: Output directory for results
     """
-    print("🚀 Starting Modular 3-Plane Flow Evaluation")
+    print("🚀 Starting Modular 6-Plane Flow Evaluation")
     print("=" * 60)
     print(f"Checkpoint: {checkpoint_path}")
     print(f"Save predictions: {save_predictions}")
@@ -235,7 +235,7 @@ def main() -> None:
                 hydra.compose(config_name="train_flow_swin_3plane", overrides=args.config_overrides)
 
                 # Run evaluation
-                run_comprehensive_3plane_evaluation(
+                run_comprehensive_6plane_evaluation(
                     checkpoint_path=args.checkpoint_path,
                     save_predictions=args.save_predictions,
                     custom_points=args.custom_points,
@@ -246,7 +246,7 @@ def main() -> None:
         except Exception as e:
             print(f"⚠️ Hydra configuration failed: {e}, running without configuration management")
             # Run evaluation without Hydra
-            run_comprehensive_3plane_evaluation(
+            run_comprehensive_6plane_evaluation(
                 checkpoint_path=args.checkpoint_path,
                 save_predictions=args.save_predictions,
                 custom_points=args.custom_points,
@@ -257,7 +257,7 @@ def main() -> None:
     else:
         print("⚠️ Hydra not available, running without configuration management")
         # Run evaluation without Hydra
-        run_comprehensive_3plane_evaluation(
+        run_comprehensive_6plane_evaluation(
             checkpoint_path=args.checkpoint_path,
             save_predictions=args.save_predictions,
             custom_points=args.custom_points,

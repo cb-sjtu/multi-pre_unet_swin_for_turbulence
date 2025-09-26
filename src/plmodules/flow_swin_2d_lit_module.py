@@ -70,21 +70,27 @@ class FlowSwin2DLitModule(BaseLitModule):
         # Cache for steps_per_epoch (will be set properly during training setup)
         self._cached_steps_per_epoch = None
 
-        # Per-channel metrics configuration for 3-plane 4-channel data
+        # Per-channel metrics configuration for 6-plane 3-channel data
         self.enable_per_channel_metrics = getattr(cfg, "enable_per_channel_metrics", True)
         self.channel_names = [
             "plane0_u_y29",
             "plane0_v_y29",
             "plane0_w_y29",
-            "plane0_p_y29",
             "plane1_u_y54",
             "plane1_v_y54",
             "plane1_w_y54",
-            "plane1_p_y54",
             "plane2_u_y75",
             "plane2_v_y75",
             "plane2_w_y75",
-            "plane2_p_y75",
+            "plane3_u_y330",
+            "plane3_v_y330",
+            "plane3_w_y330",
+            "plane4_u_y355",
+            "plane4_v_y355",
+            "plane4_w_y355",
+            "plane5_u_y308",
+            "plane5_v_y308",
+            "plane5_w_y308",
         ]
         self.num_channels = len(self.channel_names)
 
@@ -143,10 +149,10 @@ class FlowSwin2DLitModule(BaseLitModule):
             metrics[f"{ch_name}_rel_error"] = ch_rel_error
 
         # Compute grouped metrics (average per field across all planes)
-        field_names = ["u", "v", "w", "p"]
+        field_names = ["u", "v", "w"]  # Only 3 fields now, no pressure
         for field_idx, field_name in enumerate(field_names):
-            # Get indices for this field across all planes
-            field_channels = [field_idx + plane_idx * 4 for plane_idx in range(3)]
+            # Get indices for this field across all planes (6 planes now)
+            field_channels = [field_idx + plane_idx * 3 for plane_idx in range(6)]
 
             # Average metrics for this field
             field_mse = torch.stack([metrics[f"{self.channel_names[ch]}_mse"] for ch in field_channels]).mean()
@@ -160,8 +166,8 @@ class FlowSwin2DLitModule(BaseLitModule):
             metrics[f"field_{field_name}_avg_rel_error"] = field_rel_error
 
         # Compute plane-wise metrics (average per plane across all fields)
-        for plane_idx in range(3):
-            plane_channels = [plane_idx * 4 + field_idx for field_idx in range(4)]
+        for plane_idx in range(6):  # 6 planes now
+            plane_channels = [plane_idx * 3 + field_idx for field_idx in range(3)]  # 3 fields per plane
 
             plane_mse = torch.stack([metrics[f"{self.channel_names[ch]}_mse"] for ch in plane_channels]).mean()
             plane_mae = torch.stack([metrics[f"{self.channel_names[ch]}_mae"] for ch in plane_channels]).mean()
@@ -169,7 +175,7 @@ class FlowSwin2DLitModule(BaseLitModule):
                 [metrics[f"{self.channel_names[ch]}_rel_error"] for ch in plane_channels]
             ).mean()
 
-            y_slice = [29, 54, 75][plane_idx]
+            y_slice = [29, 54, 75, 330, 355, 308][plane_idx]  # Updated y_slice list
             metrics[f"plane{plane_idx}_y{y_slice}_avg_mse"] = plane_mse
             metrics[f"plane{plane_idx}_y{y_slice}_avg_mae"] = plane_mae
             metrics[f"plane{plane_idx}_y{y_slice}_avg_rel_error"] = plane_rel_error
@@ -715,6 +721,21 @@ class FlowSwin2DLitModule(BaseLitModule):
 
         # Log total loss and curriculum parameters
         self.log("train/loss", total_loss, on_step=True, on_epoch=False, prog_bar=True, batch_size=batch_size)
+
+        # Log learning rate for real-time monitoring in wandb
+        if self.optimizers():
+            optimizer = self.optimizers()
+            if hasattr(optimizer, "param_groups"):
+                # Get current learning rate from the optimizer
+                current_lr = optimizer.param_groups[0]["lr"]
+                self.log("train/learning_rate", current_lr, on_step=True, on_epoch=False, batch_size=batch_size)
+
+            # Also log scheduled learning rate if lr_scheduler exists
+            if self.lr_schedulers():
+                lr_scheduler = self.lr_schedulers()
+                if hasattr(lr_scheduler, "get_last_lr"):
+                    scheduled_lr = lr_scheduler.get_last_lr()[0]
+                    self.log("train/scheduled_lr", scheduled_lr, on_step=True, on_epoch=False, batch_size=batch_size)
 
         # Always log teacher forcing ratio when scheduled sampling is enabled
         if self.ss_enabled:

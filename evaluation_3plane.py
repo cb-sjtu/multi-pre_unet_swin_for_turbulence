@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Evaluation script for 3-plane 4-channel Flow Swin Transformer implementation.
+Evaluation script for 6-plane 3-channel Flow Swin Transformer implementation.
 Loads the best model checkpoint and generates comprehensive visualizations for all planes and channels.
 """
 
@@ -36,7 +36,7 @@ from src.datasets.flow_sequence_2d.flow_sequence_3plane import FlowSequence3Plan
 
 
 class ThreePlaneModelEvaluator:
-    """Evaluator for the 3-plane 4-channel Flow Swin Transformer model."""
+    """Evaluator for the 6-plane 3-channel Flow Swin Transformer model."""
 
     def __init__(self, checkpoint_path: str, model_cfg: DictConfig, save_predictions: bool = False):
         """Initialize the evaluator.
@@ -67,7 +67,7 @@ class ThreePlaneModelEvaluator:
                         project="turbulence_swin_3plane",
                         id=training_run_id,
                         resume="allow",
-                        tags=["evaluation", "flow", "swin", "3plane", "12channel"],
+                        tags=["evaluation", "flow", "swin", "6plane", "18channel"],
                     )
                     print("Successfully resumed training wandb run for evaluation logging")
                 except Exception as e:
@@ -76,7 +76,7 @@ class ThreePlaneModelEvaluator:
                     self.wandb_run = wandb.init(
                         project="turbulence_swin_3plane",
                         name=f"evaluation_{log_dir_name}",
-                        tags=["evaluation", "flow", "swin", "3plane", "12channel"],
+                        tags=["evaluation", "flow", "swin", "6plane", "18channel"],
                         config={
                             "checkpoint_path": checkpoint_path,
                             "device": str(self.device),
@@ -144,16 +144,16 @@ class ThreePlaneModelEvaluator:
         return model
 
     def _setup_datasets(self):
-        """Setup the 3-plane datasets for evaluation."""
-        print("Setting up 3-plane datasets...")
+        """Setup the 6-plane datasets for evaluation."""
+        print("Setting up 6-plane datasets...")
 
         # Dataset configuration matching training
         data_dir = "/home/sh/CB/icon-thewell-dev/data/preprocessed_flow"
-        field_names = ["u", "v", "w", "p"]
+        field_names = ["u", "v", "w"]  # Only 3 fields, no pressure
         file_pattern = "*u-v-w-p_scale4-6-1_yslice*.h5"
         resolution_scale = (4, 6, 1)
-        y_slices = [29, 54, 75]  # 与归一化统计对应的y平面
-        norm_stats_file = "norm_stats_12ch_3plane_u-v-w-p_scale4-6-1.json"
+        y_slices = [29, 54, 75, 330, 355, 308]  # 6个y平面
+        norm_stats_file = "norm_stats_18ch_6plane_u-v-w_scale4-6-1.json"
 
         # Create datasets for all splits
         train_dataset = FlowSequence3PlaneDataset(
@@ -203,6 +203,7 @@ class ThreePlaneModelEvaluator:
 
         print(f"Dataset sizes - Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
         print(f"Channel info: {train_dataset.get_channel_info()['num_total_channels']} total channels")
+        print(f"Planes: {train_dataset.get_channel_info()['num_planes']}, Fields per plane: {len(field_names)}")
 
         return train_dataset, val_dataset, test_dataset
 
@@ -254,8 +255,8 @@ class ThreePlaneModelEvaluator:
         return pred_seq
 
     def visualize_3plane_prediction(self, sample_idx: int = 0, num_future: int = 20):
-        """Visualize 3-plane 4-channel prediction with comprehensive comparison."""
-        print(f"Visualizing 3-plane sample {sample_idx} with {num_future} future steps...")
+        """Visualize 6-plane 3-channel prediction with comprehensive comparison."""
+        print(f"Visualizing 6-plane sample {sample_idx} with {num_future} future steps...")
 
         # Get sample and generate predictions
         sample = self.test_dataset[sample_idx]
@@ -289,9 +290,9 @@ class ThreePlaneModelEvaluator:
 
         # Get channel info
         channel_info = self.test_dataset.get_channel_info()
-        field_names = channel_info["field_names"]  # ["u", "v", "w", "p"]
-        y_slices = channel_info["y_slices"]  # [29, 54, 75]
-        num_planes = channel_info["num_planes"]  # 3
+        field_names = channel_info["field_names"]  # ["u", "v", "w"]
+        y_slices = channel_info["y_slices"]  # [29, 54, 75, 330, 355, 308]
+        num_planes = channel_info["num_planes"]  # 6
 
         # Create separate visualizations for each channel
         self._create_channel_visualizations(
@@ -430,7 +431,7 @@ class ThreePlaneModelEvaluator:
         display_steps = min(num_future, 10)
 
         # Create comprehensive visualization
-        # Rows: 3 planes × 4 fields = 12 rows
+        # Rows: 6 planes × 3 fields = 18 rows
         # Cols: timesteps
         fig, axes = plt.subplots(
             num_planes * len(field_names),
@@ -490,11 +491,11 @@ class ThreePlaneModelEvaluator:
                     if t == 0 and np.any(data):
                         plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-        plt.suptitle(f"3-Plane 4-Channel Prediction Overview - Sample {sample_idx}", fontsize=14)
+        plt.suptitle(f"6-Plane 3-Channel Prediction Overview - Sample {sample_idx}", fontsize=14)
         plt.tight_layout()
 
         # Save comprehensive figure
-        output_path = self.output_dir / f"3plane_comprehensive_sample_{sample_idx}.png"
+        output_path = self.output_dir / f"6plane_comprehensive_sample_{sample_idx}.png"
         plt.savefig(output_path, dpi=300, bbox_inches="tight")
         print(f"Saved comprehensive visualization: {output_path}")
 
@@ -511,8 +512,8 @@ class ThreePlaneModelEvaluator:
         plt.close()
 
     def create_3plane_animation(self, sample_idx: int = 0, num_future: int = 20):
-        """Create animation showing 3-plane evolution over time."""
-        print(f"Creating 3-plane animation for sample {sample_idx}...")
+        """Create animation showing 6-plane evolution over time."""
+        print(f"Creating 6-plane animation for sample {sample_idx}...")
 
         # Get sample and generate predictions
         sample = self.test_dataset[sample_idx]
@@ -659,7 +660,7 @@ class ThreePlaneModelEvaluator:
 
         print(f"\nEvaluation complete! Results saved to: {self.output_dir}")
         print("\nGenerated visualizations:")
-        print("- Individual channel images (12 files per sample: 3 planes × 4 channels)")
+        print("- Individual channel images (18 files per sample: 6 planes × 3 channels)")
         print("- Comprehensive overview images")
         print("- Detailed error analysis files")
         print("- Animations for temporal evolution")
@@ -708,9 +709,9 @@ class ThreePlaneModelEvaluator:
                     field_names = channel_info["field_names"]  # ["u", "v", "w", "p"]
                     # y_slices = channel_info["y_slices"]  # [29, 54, 75] (unused)
 
-                    for plane_idx in range(3):
+                    for plane_idx in range(6):
                         for field_idx, field_name in enumerate(field_names):
-                            channel_idx = plane_idx * 4 + field_idx
+                            channel_idx = plane_idx * 3 + field_idx
 
                             pred_data = pred_denorm[channel_idx]
                             target_data = target_denorm[channel_idx]
@@ -1613,8 +1614,8 @@ def main():
     else:
         # Default to the hardcoded path if no argument provided
         checkpoint_path = (
-            "/home/sh/CB/icon-thewell-dev/logs/flow_swin_3plane/runs/"
-            "2025-09-23_00-07-38-305868/checkpoints/step_34200.ckpt"
+            "/home/sh/CB/icon-thewell-dev/logs/flow_swin_6plane/runs/"
+            "2025-09-26_02-28-43-197406/checkpoints/step_9200.ckpt"
         )
 
     # Load model config (simplified for direct usage)

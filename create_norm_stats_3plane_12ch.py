@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Create normalization statistics for 12-channel (3-plane × 4-field) flow data.
+Create normalization statistics for 18-channel (6-plane × 3-field) flow data.
 This script computes per-channel statistics for proper normalization.
 Each channel gets its own mean/std for precise normalization.
+Updated for 6 planes with uvw channels only (no pressure).
 """
 
 import glob
@@ -13,24 +14,24 @@ import h5py
 import numpy as np
 
 
-def compute_12_channel_normalization_stats(data_dir, field_names, scale, y_slices, output_file):
-    """Compute normalization statistics for 12-channel 3-plane data.
+def compute_18_channel_normalization_stats(data_dir, field_names, scale, y_slices, output_file):
+    """Compute normalization statistics for 18-channel 6-plane data.
 
     Args:
         data_dir: Directory containing the data files
-        field_names: List of field names ['u', 'v', 'w', 'p']
+        field_names: List of field names ['u', 'v', 'w'] (only 3 channels, no pressure)
         scale: Resolution scale tuple (z, x, y)
-        y_slices: List of 3 y-slices [29, 54, 75]
+        y_slices: List of 6 y-slices [29, 54, 75, 330, 355, 308]
         output_file: Output JSON file name
     """
 
-    print("Computing normalization stats for 3-plane 12-channel data")
+    print("Computing normalization stats for 6-plane 18-channel data")
     print(f"Fields: {field_names}")
     print(f"Y-slices: {y_slices}")
     print(f"Resolution scale: {scale}")
 
-    # Use multi-channel files (u-v-w-p combined)
-    field_pattern = "-".join(field_names)  # "u-v-w-p"
+    # Use multi-channel files (u-v-w-p combined) but only extract first 3 channels
+    field_pattern = "u-v-w-p"  # Files still contain 4 channels, we'll extract first 3
     pattern = f"{field_pattern}_scale{scale[0]}-{scale[1]}-{scale[2]}_yslice*.h5"
     file_pattern = os.path.join(data_dir, pattern)
     files = sorted(glob.glob(file_pattern))
@@ -41,11 +42,14 @@ def compute_12_channel_normalization_stats(data_dir, field_names, scale, y_slice
 
     print(f"Found {len(files)} multi-channel files")
 
-    # Initialize storage for each of the 12 channels
-    # Channel order: [plane0_u, plane0_v, plane0_w, plane0_p,
-    #                 plane1_u, plane1_v, plane1_w, plane1_p,
-    #                 plane2_u, plane2_v, plane2_w, plane2_p]
-    num_channels = len(field_names) * len(y_slices)  # 4 * 3 = 12
+    # Initialize storage for each of the 18 channels
+    # Channel order: [plane0_u, plane0_v, plane0_w,
+    #                 plane1_u, plane1_v, plane1_w,
+    #                 plane2_u, plane2_v, plane2_w,
+    #                 plane3_u, plane3_v, plane3_w,
+    #                 plane4_u, plane4_v, plane4_w,
+    #                 plane5_u, plane5_v, plane5_w]
+    num_channels = len(field_names) * len(y_slices)  # 3 * 6 = 18
     channel_values = [[] for _ in range(num_channels)]
     total_count = 0
 
@@ -64,8 +68,8 @@ def compute_12_channel_normalization_stats(data_dir, field_names, scale, y_slice
                 # Load multi-channel data: shape (C, H, W) where C=4 for u,v,w,p
                 data_multi_channel = f["data"][()]  # Shape: (4, H, W)
 
-                # Verify shape
-                if len(data_multi_channel.shape) != 3 or data_multi_channel.shape[0] != len(field_names):
+                # Verify shape (files still contain 4 channels)
+                if len(data_multi_channel.shape) != 3 or data_multi_channel.shape[0] != 4:
                     print(f"Warning: Expected shape (4, H, W), got {data_multi_channel.shape} in {fpath}")
                     continue
 
@@ -87,11 +91,11 @@ def compute_12_channel_normalization_stats(data_dir, field_names, scale, y_slice
                     # This file doesn't correspond to one of our selected y_slices
                     continue
 
-                # Extract data for each channel in this plane
-                for field_idx, _field in enumerate(field_names):
+                # Extract data for each channel in this plane (only first 3 channels: u,v,w)
+                for field_idx in range(len(field_names)):  # Only iterate over first 3 fields (u,v,w)
                     channel_idx = plane_idx * len(field_names) + field_idx
 
-                    # Get 2D data for this field
+                    # Get 2D data for this field (from the 4-channel file, but only take first 3)
                     data_2d = data_multi_channel[field_idx]  # Shape: (H, W)
                     channel_values[channel_idx].append(data_2d.flatten())
 
@@ -172,34 +176,34 @@ def compute_12_channel_normalization_stats(data_dir, field_names, scale, y_slice
         "resolution_scale": scale,
         "train_files": len(files),
         "total_samples": total_count,
-        "normalization_type": "per_channel_12ch",
-        "description": f"Per-channel normalization for 12 channels (3 planes × {len(field_names)} fields)",
+        "normalization_type": "per_channel_18ch",
+        "description": f"Per-channel normalization for 18 channels (6 planes × {len(field_names)} fields)",
     }
 
     output_path = os.path.join(data_dir, output_file)
     with open(output_path, "w") as f:
         json.dump(stats, f, indent=2)
 
-    print(f"\n12-channel normalization stats saved to: {output_path}")
+    print(f"\n18-channel normalization stats saved to: {output_path}")
     return stats
 
 
 if __name__ == "__main__":
     data_dir = "/home/sh/CB/icon-thewell-dev/data/preprocessed_flow"
-    field_names = ["u", "v", "w", "p"]
-    scale = [4, 6, 1]  # (z, x, y) downsampling used in 3-plane data
-    y_slices = [29, 54, 75]  # The 3 y-slices available
-    output_file = "norm_stats_12ch_3plane_u-v-w-p_scale4-6-1.json"
+    field_names = ["u", "v", "w"]  # Only 3 fields, no pressure
+    scale = [4, 6, 1]  # (z, x, y) downsampling used in 6-plane data
+    y_slices = [29, 54, 75, 330, 355, 308]  # The 6 y-slices for 6-plane setup
+    output_file = "norm_stats_18ch_6plane_u-v-w_scale4-6-1.json"
 
-    stats = compute_12_channel_normalization_stats(
+    stats = compute_18_channel_normalization_stats(
         data_dir=data_dir, field_names=field_names, scale=scale, y_slices=y_slices, output_file=output_file
     )
 
     if stats:
         print("\n=== SUCCESS ===")
-        print("12-channel normalization stats created!")
+        print("18-channel normalization stats created!")
         print(f"Use this file in your training: {output_file}")
         print(f"Total channels: {stats['num_channels']}")
-        print(f"Channel names: {stats['channel_names'][:6]}... (showing first 6)")
+        print(f"Channel names: {stats['channel_names'][:9]}... (showing first 9)")
     else:
         print("Failed to create normalization stats")

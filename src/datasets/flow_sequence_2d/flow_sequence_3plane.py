@@ -1,8 +1,8 @@
 """
 Enhanced dataset for 3D multi-plane flow sequence prediction.
-支持同时加载3个y平面，每个平面包含uvwp四个通道的数据。
+支持同时加载6个y平面，每个平面包含uvw三个通道的数据（不包含压力）。
 位置编码在网络层面处理。
-包含12通道标准化功能。
+包含18通道标准化功能。
 """
 
 import glob
@@ -18,7 +18,7 @@ from torch.utils.data import Dataset
 class FlowSequence3PlaneDataset(Dataset):
     """Dataset for 3D multi-plane temporal sequence prediction of flow fields.
 
-    Loads 3 y-planes with 4 channels (u,v,w,p) each, for a total of 12 channels.
+    Loads 6 y-planes with 3 channels (u,v,w) each, for a total of 18 channels.
     Position encoding is handled at the network level.
     """
 
@@ -27,10 +27,10 @@ class FlowSequence3PlaneDataset(Dataset):
         data_dir: str,
         input_length: int = 5,
         max_k_steps: int = 1,  # Number of future steps to load as ground truth
-        field_names: list[str] = None,  # ["u", "v", "w", "p"]
-        file_pattern: str = "*scale4-6-1_yslice*.h5",  # 匹配包含uvwp的文件
+        field_names: list[str] = None,  # ["u", "v", "w"] (no pressure)
+        file_pattern: str = "*scale4-6-1_yslice*.h5",  # 匹配包含uvwp的文件，但只使用前3个通道
         resolution_scale: tuple[int, int, int] = (1, 4, 4),  # (z, y, x) downsampling
-        y_slices: list[int] = None,  # 3个y平面的索引，如 [50, 75, 100]
+        y_slices: list[int] = None,  # 6个y平面的索引，如 [29, 54, 75, 330, 355, 308]
         train_ratio: float = 0.7,
         valid_ratio: float = 0.15,
         test_ratio: float = 0.15,
@@ -43,10 +43,10 @@ class FlowSequence3PlaneDataset(Dataset):
             data_dir: Directory containing HDF5 files
             input_length: Number of previous timesteps to use for prediction
             max_k_steps: Number of future steps to load as ground truth (for evaluation)
-            field_names: List of fields to predict (default: ['u', 'v', 'w', 'p'])
-            file_pattern: Pattern for HDF5 files (should match uvwp files)
+            field_names: List of fields to predict (default: ['u', 'v', 'w']) - no pressure
+            file_pattern: Pattern for HDF5 files (should match uvwp files, but only first 3 channels used)
             resolution_scale: Downsampling factor for (z, y, x) dimensions
-            y_slices: List of 3 y-slice indices to load (if None, auto-select)
+            y_slices: List of 6 y-slice indices to load (if None, use default 6 planes)
             train_ratio: Ratio of data for training
             valid_ratio: Ratio of data for validation
             test_ratio: Ratio of data for testing
@@ -56,7 +56,10 @@ class FlowSequence3PlaneDataset(Dataset):
         assert abs(train_ratio + valid_ratio + test_ratio - 1.0) < 1e-6
 
         if field_names is None:
-            field_names = ["u", "v", "w", "p"]
+            field_names = ["u", "v", "w"]  # Only 3 channels, no pressure
+
+        if y_slices is None:
+            y_slices = [29, 54, 75, 330, 355, 308]  # Default 6 y-slices
 
         self.data_dir = data_dir
         self.input_length = input_length
@@ -67,8 +70,8 @@ class FlowSequence3PlaneDataset(Dataset):
         self.split = split
         self.enable_normalization = enable_normalization
 
-        # 总通道数 = 3个平面 × 4个物理通道 = 12
-        self.num_planes = 3
+        # 总通道数 = 6个平面 × 3个物理通道 = 18
+        self.num_planes = 6
         self.num_total_channels = self.num_planes * self.num_channels_per_plane
 
         # Get files for each y-plane separately and find common timesteps
@@ -168,18 +171,18 @@ class FlowSequence3PlaneDataset(Dataset):
         # Use the first file from the first plane
         first_plane_files = self.files_by_plane[y_slices[0]]
         with h5py.File(first_plane_files[0], "r") as f:
-            # Data is stored as (C, H, W) where C=4 for u,v,w,p
+            # Data is stored as (C, H, W) where C=4 for u,v,w,p (but we only use first 3)
             data_multi_channel = f["data"][()]  # Shape: (4, H, W)
 
-            if len(data_multi_channel.shape) != 3 or data_multi_channel.shape[0] != len(self.field_names):
+            if len(data_multi_channel.shape) != 3 or data_multi_channel.shape[0] != 4:
                 raise ValueError(f"Expected data shape (4, H, W), got {data_multi_channel.shape}")
 
             # The data is already 2D per y-slice, we just need to determine which y_slices are available
             # y_slices are determined by the filename pattern and file availability
             if y_slices is None:
-                raise ValueError("y_slices must be provided for 3-plane dataset")
+                raise ValueError("y_slices must be provided for 6-plane dataset")
             else:
-                assert len(y_slices) == 3, "Must provide exactly 3 y_slices"
+                assert len(y_slices) == 6, "Must provide exactly 6 y_slices"
                 self.y_slices = y_slices
 
             # Get 2D shape from the data (H, W)
@@ -192,7 +195,7 @@ class FlowSequence3PlaneDataset(Dataset):
             print(f"Total physical channels: {self.num_total_channels}")
 
     def _setup_normalization(self, norm_stats):
-        """Setup normalization parameters for 12-channel 3-plane data."""
+        """Setup normalization parameters for 18-channel 6-plane data."""
         if not self.enable_normalization or norm_stats is None:
             self.mean = None
             self.std = None
@@ -220,15 +223,15 @@ class FlowSequence3PlaneDataset(Dataset):
         else:
             raise ValueError(f"norm_stats must be dict or file path, got {type(norm_stats)}")
 
-        # Extract per-channel statistics for 12 channels
+        # Extract per-channel statistics for 18 channels
         try:
             if "per_channel_stats" in stats and len(stats["per_channel_stats"]) > 0:
-                # Per-channel normalization for 12 channels
+                # Per-channel normalization for 18 channels
                 per_channel_stats = stats["per_channel_stats"]
                 self.mean = []
                 self.std = []
 
-                # Build channel stats in order: [plane0_u, plane0_v, plane0_w, plane0_p, plane1_u, ...]
+                # Build channel stats in order: [plane0_u, plane0_v, plane0_w, plane1_u, plane1_v, plane1_w, ...]
                 for ch_idx in range(self.num_total_channels):
                     channel_key = f"channel_{ch_idx:02d}"
 
@@ -242,17 +245,17 @@ class FlowSequence3PlaneDataset(Dataset):
                         self.std.append(float(stats["std"]))
 
                 # Convert to tensors for efficient computation
-                self.mean = torch.tensor(self.mean, dtype=torch.float32).view(-1, 1, 1)  # (12, 1, 1)
-                self.std = torch.tensor(self.std, dtype=torch.float32).view(-1, 1, 1)  # (12, 1, 1)
+                self.mean = torch.tensor(self.mean, dtype=torch.float32).view(-1, 1, 1)  # (18, 1, 1)
+                self.std = torch.tensor(self.std, dtype=torch.float32).view(-1, 1, 1)  # (18, 1, 1)
                 self.per_channel_norm = True
 
-                print(f"12-channel normalization enabled for {self.split} split:")
-                for ch_idx in range(min(6, len(self.mean))):  # Show first 6 channels
+                print(f"18-channel normalization enabled for {self.split} split:")
+                for ch_idx in range(min(9, len(self.mean))):  # Show first 9 channels
                     print(
                         f"  channel_{ch_idx:02d}: mean={self.mean[ch_idx, 0, 0]:.6f}, std={self.std[ch_idx, 0, 0]:.6f}"
                     )
-                if len(self.mean) > 6:
-                    print(f"  ... and {len(self.mean) - 6} more channels")
+                if len(self.mean) > 9:
+                    print(f"  ... and {len(self.mean) - 9} more channels")
 
             else:
                 # Global normalization fallback
@@ -334,9 +337,12 @@ class FlowSequence3PlaneDataset(Dataset):
                 - "label": target sequence with shape (1, max_k_steps, num_total_channels, H, W)
 
         Channel organization:
-            - Channels 0-3: Plane 0 (y_slice[0]) - [u, v, w, p]
-            - Channels 4-7: Plane 1 (y_slice[1]) - [u, v, w, p]
-            - Channels 8-11: Plane 2 (y_slice[2]) - [u, v, w, p]
+            - Channels 0-2: Plane 0 (y_slice[0]) - [u, v, w]
+            - Channels 3-5: Plane 1 (y_slice[1]) - [u, v, w]
+            - Channels 6-8: Plane 2 (y_slice[2]) - [u, v, w]
+            - Channels 9-11: Plane 3 (y_slice[3]) - [u, v, w]
+            - Channels 12-14: Plane 4 (y_slice[4]) - [u, v, w]
+            - Channels 15-17: Plane 5 (y_slice[5]) - [u, v, w]
         """
         base_idx = self.indices[idx]
         description = (
@@ -351,10 +357,10 @@ class FlowSequence3PlaneDataset(Dataset):
             # Get the timestep for this frame
             timestep = self.timesteps[base_idx + i]
 
-            # Load data for all 3 planes at this timestep
+            # Load data for all 6 planes at this timestep
             plane_channels = []
 
-            # 遍历3个平面，每个平面对应不同的文件
+            # 遍历6个平面，每个平面对应不同的文件
             for y_slice in self.y_slices:
                 # Find the file for this y_slice and timestep
                 target_filename = f"u-v-w-p_scale4-6-1_yslice{y_slice}_t{timestep:05d}.h5"
@@ -367,15 +373,18 @@ class FlowSequence3PlaneDataset(Dataset):
                 with h5py.File(fpath, "r") as f:
                     data_multi_channel = f["data"][()]  # Shape: (4, H, W)
 
-                    # Extract each field (u, v, w, p) for this plane
-                    for field_idx in range(len(self.field_names)):
+                    # Extract only first 3 fields (u, v, w) for this plane, skip pressure
+                    for field_idx in range(len(self.field_names)):  # Only 3 iterations for u,v,w
                         data_2d = data_multi_channel[field_idx]  # Shape: (H, W)
                         plane_channels.append(data_2d)
 
             # Stack all channels: (num_total_channels, H, W)
-            # Channel order: [plane0_u, plane0_v, plane0_w, plane0_p,
-            #                 plane1_u, plane1_v, plane1_w, plane1_p,
-            #                 plane2_u, plane2_v, plane2_w, plane2_p]
+            # Channel order: [plane0_u, plane0_v, plane0_w,
+            #                 plane1_u, plane1_v, plane1_w,
+            #                 plane2_u, plane2_v, plane2_w,
+            #                 plane3_u, plane3_v, plane3_w,
+            #                 plane4_u, plane4_v, plane4_w,
+            #                 plane5_u, plane5_v, plane5_w]
             multi_channel_frame = np.stack(plane_channels, axis=0)
             frames.append(multi_channel_frame)
 
@@ -422,7 +431,7 @@ class FlowSequence3PlaneDataset(Dataset):
 
             # 物理通道
             for field_name in self.field_names:
-                channel_mapping.append(f"ch{ch_idx}: plane{plane_idx}_y{y_slice}_{field_name}")
+                channel_mapping.append(f"ch{ch_idx:02d}: plane{plane_idx}_y{y_slice}_{field_name}")
                 ch_idx += 1
 
         info["channel_mapping"] = channel_mapping
