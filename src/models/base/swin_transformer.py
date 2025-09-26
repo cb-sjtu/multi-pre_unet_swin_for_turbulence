@@ -432,7 +432,7 @@ class TemporalAttention(nn.Module):
         qkv_bias: bool = True,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
-        use_causal_mask: bool = True,
+        use_causal_mask: bool = False,
     ):
         super().__init__()
         self.embed_dim = embed_dim
