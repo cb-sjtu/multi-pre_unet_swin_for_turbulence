@@ -426,11 +426,18 @@ class TemporalAttention(nn.Module):
     """
 
     def __init__(
-        self, embed_dim: int, num_heads: int = 8, qkv_bias: bool = True, attn_drop: float = 0.0, proj_drop: float = 0.0
+        self,
+        embed_dim: int,
+        num_heads: int = 8,
+        qkv_bias: bool = True,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+        use_causal_mask: bool = True,
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
+        self.use_causal_mask = use_causal_mask
         head_dim = embed_dim // num_heads
         self.scale = head_dim**-0.5
 
@@ -459,6 +466,15 @@ class TemporalAttention(nn.Module):
 
         q = q * self.scale
         attn = q @ k.transpose(-2, -1)  # (B*N, num_heads, T=3, T=3) - Score matrix: 3x3 attention between time steps
+
+        # Apply causal mask if enabled
+        if self.use_causal_mask:
+            # Create causal mask: mask[i, j] = 0 if i >= j (can see current and past), else -inf (cannot see future)
+            causal_mask = torch.triu(
+                torch.ones(T_seq, T_seq, device=attn.device, dtype=attn.dtype) * float("-inf"), diagonal=1
+            )
+            attn = attn + causal_mask.unsqueeze(0).unsqueeze(0)  # Broadcast to (1, 1, T, T)
+
         attn = F.softmax(attn, dim=-1)
         attn = self.attn_drop(attn)
 
@@ -642,7 +658,8 @@ class SwinTransformer2DWithMerging(nn.Module):
         self.pos_drop = nn.Dropout(drop_rate)
 
         # Stochastic depth
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(self.depths_encoder))]
+        total_encoder_latent = sum(self.depths_encoder) + self.depth_latent
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, total_encoder_latent)]
         dpr_decoder = [x.item() for x in torch.linspace(0, drop_path_rate, sum(self.depths_decoder))]
 
         # Build encoder layers
@@ -669,16 +686,32 @@ class SwinTransformer2DWithMerging(nn.Module):
             )
             self.layers.append(layer)
 
-            # Add patch merging layer (except for the last layer)
-            if i_layer < self.num_layers - 1:
-                downsample = PatchMerging2D(
-                    input_resolution=(self.patch_H // (2**i_layer), self.patch_W // (2**i_layer)),
-                    dim=int(embed_dim * 2**i_layer),
+            # Add patch merging layer for all encoder layers
+            downsample = PatchMerging2D(
+                input_resolution=(self.patch_H // (2**i_layer), self.patch_W // (2**i_layer)),
+                dim=int(embed_dim * 2**i_layer),
+                norm_layer=norm_layer,
+            )
+            self.downsample_layers.append(downsample)
+
+        # Build latent (bottleneck) layer
+        self.latent_layer = nn.ModuleList(
+            [
+                SwinTransformerBlock2D(
+                    dim=int(embed_dim * 2**self.num_encoder_layers),  # Deepest dimension after all downsampling
+                    num_heads=num_heads,
+                    window_size=window_size,
+                    shift_size=(0, 0) if (i % 2 == 0) else tuple(ws // 2 for ws in window_size),
+                    mlp_ratio=mlp_ratio,
+                    qkv_bias=qkv_bias,
+                    drop=drop_rate,
+                    attn_drop=attn_drop_rate,
+                    drop_path=dpr[sum(self.depths_encoder) + i],  # Continue from encoder drop_path
                     norm_layer=norm_layer,
                 )
-                self.downsample_layers.append(downsample)
-            else:
-                self.downsample_layers.append(None)
+                for i in range(self.depth_latent)
+            ]
+        )
 
         # Build decoder layers
         self.layers_decoder = nn.ModuleList()
@@ -687,34 +720,28 @@ class SwinTransformer2DWithMerging(nn.Module):
 
         for i_layer in range(self.num_layers_decoder):
             # After upsampling, dimension is halved, then doubled by concatenation
-            dim_after_upsample = int(embed_dim * 2 ** (self.num_encoder_layers - 1 - i_layer)) // 2
-            concat_linear = (
-                nn.Linear(
-                    2 * dim_after_upsample,  # Input: concatenated features (upsampled + skip)
-                    dim_after_upsample,  # Output: back to upsampled dimension
-                )
-                if i_layer < self.num_layers_decoder - 1
-                else nn.Identity()
+            # Now all encoder layers have downsampling, so dimension calculation changes
+            dim_after_upsample = int(embed_dim * 2 ** (self.num_encoder_layers - i_layer)) // 2
+            concat_linear = nn.Linear(
+                2 * dim_after_upsample,  # Input: concatenated features (upsampled + skip)
+                dim_after_upsample,  # Output: back to upsampled dimension
             )
 
-            layer_up = (
-                PatchExpand2D(
-                    input_resolution=(
-                        self.patch_H // (2 ** (self.num_encoder_layers - 1 - i_layer)),
-                        self.patch_W // (2 ** (self.num_encoder_layers - 1 - i_layer)),
-                    ),
-                    dim=int(embed_dim * 2 ** (self.num_encoder_layers - 1 - i_layer)),
-                    dim_scale=2,
-                    norm_layer=norm_layer,
-                )
-                if (i_layer < self.num_layers_decoder - 1)
-                else nn.Identity()
+            # All decoder layers use PatchExpand2D for upsampling
+            layer_up = PatchExpand2D(
+                input_resolution=(
+                    self.patch_H // (2 ** (self.num_encoder_layers - i_layer)),
+                    self.patch_W // (2 ** (self.num_encoder_layers - i_layer)),
+                ),
+                dim=int(embed_dim * 2 ** (self.num_encoder_layers - i_layer)),
+                dim_scale=2,
+                norm_layer=norm_layer,
             )
 
             layer = nn.ModuleList(
                 [
                     SwinTransformerBlock2D(
-                        dim=int(embed_dim * 2 ** (self.num_encoder_layers - 1 - i_layer)),
+                        dim=dim_after_upsample,  # Use correct dimension after skip connection
                         num_heads=num_heads,
                         window_size=window_size,
                         shift_size=(0, 0) if (i % 2 == 0) else tuple(ws // 2 for ws in window_size),
@@ -745,7 +772,8 @@ class SwinTransformer2DWithMerging(nn.Module):
                 norm_layer=norm_layer,
             )
             self.output = nn.Conv2d(
-                in_channels=sequence_length * (embed_dim // patch_size[0]),  # T * (reduced channels after PatchExpand)
+                in_channels=sequence_length
+                * (embed_dim // (patch_size[0] ** 2)),  # T * (reduced channels after PatchExpand)
                 out_channels=prediction_horizon * self.num_channels,  # Output all channels
                 kernel_size=1,
                 bias=False,
@@ -811,23 +839,38 @@ class SwinTransformer2DWithMerging(nn.Module):
 
         # Encoder
         for i_layer, (layer, downsample) in enumerate(zip(self.layers, self.downsample_layers, strict=False)):
-            # Store current features for skip connection
-            x_downsample.append(x)
-
             # Apply transformer blocks
             current_resolution = (self.patch_H // (2**i_layer), self.patch_W // (2**i_layer))
             for block in layer:
                 x = block(x, current_resolution[0], current_resolution[1])
 
-            # Patch merging (downsampling)
-            if downsample is not None:
-                x = downsample(x)
+            # Store processed features for skip connection (after transformer blocks, before downsampling)
+            x_downsample.append(x)
 
-        # Decoder with skip connections
+            # Patch merging (downsampling) - all encoder layers have downsampling
+            x = downsample(x)
+
+        # Latent (bottleneck) layer processing
+        current_resolution = (
+            self.patch_H // (2**self.num_encoder_layers),
+            self.patch_W // (2**self.num_encoder_layers),
+        )
+        for block in self.latent_layer:
+            x = block(x, current_resolution[0], current_resolution[1])
+
+        # Decoder with skip connections (starting from latent output)
         for i_layer, (layer_up, layer, concat_back_dim) in enumerate(
             zip(self.upsample_layers, self.layers_decoder, self.concat_back_dim, strict=False)
         ):
-            # Apply transformer blocks first
+            # All decoder layers perform upsampling
+            x = layer_up(x)
+            # Concatenate with encoder features (skip connection)
+            skip_idx = self.num_encoder_layers - 1 - i_layer  # Skip connection from encoder layers
+            if skip_idx >= 0 and skip_idx < len(x_downsample):
+                x = torch.cat([x, x_downsample[skip_idx]], -1)
+                x = concat_back_dim(x)
+
+            # Apply transformer blocks after skip connection (resolution after upsampling)
             current_resolution = (
                 self.patch_H // (2 ** (self.num_encoder_layers - 1 - i_layer)),
                 self.patch_W // (2 ** (self.num_encoder_layers - 1 - i_layer)),
@@ -835,20 +878,10 @@ class SwinTransformer2DWithMerging(nn.Module):
             for block in layer:
                 x = block(x, current_resolution[0], current_resolution[1])
 
-            # Upsample (except for last decoder layer)
-            if i_layer < self.num_layers_decoder - 1:
-                x = layer_up(x)
-                # Concatenate with encoder features (skip connection)
-                skip_idx = self.num_encoder_layers - 2 - i_layer  # Correct skip connection index
-                if skip_idx >= 0:
-                    x = torch.cat([x, x_downsample[skip_idx]], -1)
-                    x = concat_back_dim(x)
-
         x = self.norm(x)
 
         # Final upsampling and output
         if self.final_upsample == "expand_first":
-            x = self.up(x)
             # Calculate actual spatial dimensions after final upsampling
             # PatchExpand2D with dim_scale=patch_size[0] expands by patch_size[0] in each spatial dimension
             final_H = self.patch_H * self.patch_size[0]

@@ -269,13 +269,13 @@ class SwinTransformer3PlaneSimple(nn.Module):
 
         # Encoder
         for i_layer, (layer, downsample) in enumerate(zip(self.layers, self.downsample_layers, strict=False)):
-            # Store current features for skip connection
-            x_downsample.append(x)
-
             # Apply transformer blocks
             current_resolution = (self.patch_H // (2**i_layer), self.patch_W // (2**i_layer))
             for block in layer:
                 x = block(x, current_resolution[0], current_resolution[1])
+
+            # Store processed features for skip connection (after transformer blocks, before downsampling)
+            x_downsample.append(x)
 
             # Patch merging (downsampling)
             if downsample is not None:
@@ -285,22 +285,22 @@ class SwinTransformer3PlaneSimple(nn.Module):
         for i_layer, (layer_up, layer, concat_back_dim) in enumerate(
             zip(self.upsample_layers, self.layers_decoder, self.concat_back_dim, strict=False)
         ):
-            # Apply transformer blocks first
+            # Upsample (except for last decoder layer)
+            if i_layer < self.num_layers_decoder - 1:
+                x = layer_up(x)
+                # Concatenate with encoder features (skip connection)
+                skip_idx = self.num_encoder_layers - 1 - i_layer  # Correct skip connection index
+                if skip_idx >= 0:
+                    x = torch.cat([x, x_downsample[skip_idx]], -1)
+                    x = concat_back_dim(x)
+
+            # Apply transformer blocks after skip connection
             current_resolution = (
                 self.patch_H // (2 ** (self.num_encoder_layers - 1 - i_layer)),
                 self.patch_W // (2 ** (self.num_encoder_layers - 1 - i_layer)),
             )
             for block in layer:
                 x = block(x, current_resolution[0], current_resolution[1])
-
-            # Upsample (except for last decoder layer)
-            if i_layer < self.num_layers_decoder - 1:
-                x = layer_up(x)
-                # Concatenate with encoder features (skip connection)
-                skip_idx = self.num_encoder_layers - 2 - i_layer  # Correct skip connection index
-                if skip_idx >= 0:
-                    x = torch.cat([x, x_downsample[skip_idx]], -1)
-                    x = concat_back_dim(x)
 
         x = self.norm(x)
 
