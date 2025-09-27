@@ -357,7 +357,7 @@ class ChannelAttention(nn.Module):
         self,
         patch_dim: int,
         d_c: int = 32,
-        num_heads: int = 2,
+        num_heads: int = 1,
         qkv_bias: bool = True,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
@@ -594,6 +594,10 @@ class SwinTransformer2DWithMerging(nn.Module):
         patch_norm: bool = True,
         final_upsample: str = "expand_first",
         use_patch_merging: bool = True,
+        # Parameters for independent position encoding
+        enable_independent_encoding: bool = True,
+        num_planes: int = 6,
+        num_fields_per_plane: int = 3,
     ):
         super().__init__()
 
@@ -607,6 +611,11 @@ class SwinTransformer2DWithMerging(nn.Module):
         self.patch_size = patch_size
         self.embed_dim = embed_dim
         self.patch_norm = patch_norm
+
+        # Store independent encoding parameters
+        self.enable_independent_encoding = enable_independent_encoding
+        self.num_planes = num_planes
+        self.num_fields_per_plane = num_fields_per_plane
 
         # Split depths into encoder, latent, and decoder
         self.num_encoder_layers = len(depths) // 2
@@ -632,9 +641,24 @@ class SwinTransformer2DWithMerging(nn.Module):
             groups=sequence_length * self.num_channels,
         )
 
-        # Temporal position embedding
-        self.temporal_pos_embed = nn.Parameter(torch.zeros(1, sequence_length, self.num_channels, 1, 1))
-        nn.init.trunc_normal_(self.temporal_pos_embed, std=0.02)
+        # Use independent encoding based on configuration
+        if self.enable_independent_encoding and self.num_planes > 1:
+            # Independent position embeddings
+            # 时间编码: (1, T, 1, 1, 1, 1)
+            self.temporal_pos_embed = nn.Parameter(torch.zeros(1, sequence_length, 1, 1, 1, 1))
+            # 平面编码: (1, 1, num_planes, 1, 1, 1)
+            self.plane_pos_embed = nn.Parameter(torch.zeros(1, 1, self.num_planes, 1, 1, 1))
+            # 通道编码: (1, 1, 1, num_fields, 1, 1)
+            self.channel_pos_embed = nn.Parameter(torch.zeros(1, 1, 1, self.num_fields_per_plane, 1, 1))
+
+            # Initialize all position embeddings
+            nn.init.trunc_normal_(self.temporal_pos_embed, std=0.02)
+            nn.init.trunc_normal_(self.plane_pos_embed, std=0.02)
+            nn.init.trunc_normal_(self.channel_pos_embed, std=0.02)
+        else:
+            # Original joint temporal position embedding for other models
+            self.temporal_pos_embed = nn.Parameter(torch.zeros(1, sequence_length, self.num_channels, 1, 1))
+            nn.init.trunc_normal_(self.temporal_pos_embed, std=0.02)
 
         # Enhanced patch embedding with channel attention
         self.patch_embed = PatchEmbed2D(
@@ -815,8 +839,22 @@ class SwinTransformer2DWithMerging(nn.Module):
         assert self.num_channels == C, f"Expected {self.num_channels} channels, got {C}"
         assert tuple(self.input_shape) == (H, W), f"Expected shape {self.input_shape}, got {(H, W)}"
 
-        # Add temporal position embedding
-        x = x + self.temporal_pos_embed  # (B, T, C=3, H, W)
+        # Apply position embeddings
+        if self.enable_independent_encoding and self.num_planes > 1:
+            # Apply independent encodings
+            # Reshape input to separate planes and fields: (B, T, C, H, W) -> (B, T, num_planes, num_fields, H, W)
+            x = einops.rearrange(x, "b t (p f) h w -> b t p f h w", p=self.num_planes, f=self.num_fields_per_plane)
+
+            # Apply independent position embeddings
+            x = x + self.temporal_pos_embed  # Broadcast to (B, T, num_planes, num_fields, H, W)
+            x = x + self.plane_pos_embed  # Broadcast to (B, T, num_planes, num_fields, H, W)
+            x = x + self.channel_pos_embed  # Broadcast to (B, T, num_planes, num_fields, H, W)
+
+            # Reshape back to original format: (B, T, num_planes, num_fields, H, W) -> (B, T, C, H, W)
+            x = einops.rearrange(x, "b t p f h w -> b t (p f) h w")
+        else:
+            # For other models, use original joint temporal position embedding
+            x = x + self.temporal_pos_embed  # (B, T, C, H, W)
 
         # Reshape for temporal conv: (B, T*C, H, W)
         x = einops.rearrange(x, "b t c h w -> b (t c) h w")

@@ -4,6 +4,11 @@ input_shape: [128, 128]  # 2D shape (z, x) - using downsampled resolution
 sequence_length: 5
 prediction_horizon: 1
 num_channels: 18  # 6 planes × 3 fields (u,v,w) = 18 channels
+
+# Independent position encoding configuration
+enable_independent_encoding: true  # Enable separate temporal, plane, and channel encodings
+num_planes: 6  # Number of y-planes
+num_fields_per_plane: 3  # Number of fields per plane (u, v, w)
 patch_size: [4, 4]
 embed_dim: 256
 depths: [2, 2, 4, 6, 4, 2, 2]  # encoder: [2,2,4], latent: [6], decoder: [4,2,2]
