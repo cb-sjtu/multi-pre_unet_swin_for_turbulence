@@ -357,7 +357,7 @@ class ChannelAttention(nn.Module):
         self,
         patch_dim: int,
         d_c: int = 32,
-        num_heads: int = 1,
+        num_heads: int = 2,
         qkv_bias: bool = True,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
@@ -773,7 +773,7 @@ class SwinTransformer2DWithMerging(nn.Module):
             )
             self.output = nn.Conv2d(
                 in_channels=sequence_length
-                * (embed_dim // (patch_size[0] ** 2)),  # T * (reduced channels after PatchExpand)
+                * (embed_dim // (patch_size[0])),  # T * (reduced channels after PatchExpand)
                 out_channels=prediction_horizon * self.num_channels,  # Output all channels
                 kernel_size=1,
                 bias=False,
@@ -820,7 +820,7 @@ class SwinTransformer2DWithMerging(nn.Module):
 
         # Reshape for temporal conv: (B, T*C, H, W)
         x = einops.rearrange(x, "b t c h w -> b (t c) h w")
-        x = self.temporal_conv(x)
+        # x = self.temporal_conv(x)
 
         # Enhanced patch embedding with channel attention
         # Input: (B, T*C, H, W) -> Output: (B, T, N, embed_dim)
@@ -882,6 +882,7 @@ class SwinTransformer2DWithMerging(nn.Module):
 
         # Final upsampling and output
         if self.final_upsample == "expand_first":
+            x = self.up(x)
             # Calculate actual spatial dimensions after final upsampling
             # PatchExpand2D with dim_scale=patch_size[0] expands by patch_size[0] in each spatial dimension
             final_H = self.patch_H * self.patch_size[0]
