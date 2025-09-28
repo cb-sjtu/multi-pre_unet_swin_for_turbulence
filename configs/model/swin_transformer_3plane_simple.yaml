@@ -10,7 +10,7 @@ enable_independent_encoding: true  # Enable separate temporal, plane, and channe
 num_planes: 6  # Number of y-planes
 num_fields_per_plane: 3  # Number of fields per plane (u, v, w)
 patch_size: [4, 4]
-embed_dim: 256
+embed_dim: 384
 depths: [2, 2, 4, 6, 4, 2, 2]  # encoder: [2,2,4], latent: [6], decoder: [4,2,2]
 num_heads: 16
 window_size: [8, 8]
