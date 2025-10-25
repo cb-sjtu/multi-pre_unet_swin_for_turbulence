@@ -1,0 +1,12 @@
+_target_: src.models.base.lstm_3plane.LSTM3Plane
+
+input_shape: [128, 128]  # 2D shape (z, x) - using downsampled resolution
+sequence_length: 5
+prediction_horizon: 1
+num_channels: 12  # 3 planes × 4 fields (u,v,w,p) = 12 channels
+
+# LSTM architecture parameters
+hidden_dims: [64, 128, 256]  # Hidden dimensions for each LSTM layer
+kernel_sizes: [3, 3, 3]  # Kernel sizes for each ConvLSTM layer
+num_layers: 3  # Number of LSTM layers
+bias: true
