@@ -27,6 +27,7 @@ class FlowSequence3PlaneDataset(Dataset):
         data_dir: str,
         input_length: int = 5,
         max_k_steps: int = 1,  # Number of future steps to load as ground truth
+        temporal_stride: int = 1,  # Temporal stride for sparse sampling (1=dense, 2=skip 1, etc.)
         field_names: list[str] = None,  # ["u", "v", "w", "p"]
         file_pattern: str = "*scale4-6-1_yslice*.h5",  # 匹配包含uvwp的文件
         resolution_scale: tuple[int, int, int] = (1, 4, 4),  # (z, y, x) downsampling
@@ -43,6 +44,7 @@ class FlowSequence3PlaneDataset(Dataset):
             data_dir: Directory containing HDF5 files
             input_length: Number of previous timesteps to use for prediction
             max_k_steps: Number of future steps to load as ground truth (for evaluation)
+            temporal_stride: Temporal stride for sparse sampling (1=dense, 2=skip 1, etc.)
             field_names: List of fields to predict (default: ['u', 'v', 'w', 'p'])
             file_pattern: Pattern for HDF5 files (should match uvwp files)
             resolution_scale: Downsampling factor for (z, y, x) dimensions
@@ -54,6 +56,7 @@ class FlowSequence3PlaneDataset(Dataset):
         """
         assert split in ["train", "val", "test"]
         assert abs(train_ratio + valid_ratio + test_ratio - 1.0) < 1e-6
+        assert temporal_stride >= 1, "temporal_stride must be >= 1"
 
         if field_names is None:
             field_names = ["u", "v", "w", "p"]
@@ -61,6 +64,7 @@ class FlowSequence3PlaneDataset(Dataset):
         self.data_dir = data_dir
         self.input_length = input_length
         self.max_k_steps = max_k_steps
+        self.temporal_stride = temporal_stride
         self.field_names = field_names
         self.num_channels_per_plane = len(self.field_names)
         self.resolution_scale = resolution_scale
@@ -104,36 +108,47 @@ class FlowSequence3PlaneDataset(Dataset):
         # Convert to sorted list
         self.timesteps = sorted(list(self.timesteps))
         self.num_frames = len(self.timesteps)
-        # Each sample needs input_length + max_k_steps frames
-        total_frames_needed = self.input_length + self.max_k_steps
+        # Calculate total frames needed considering temporal stride
+        # We need: input_length frames + max_k_steps frames, with temporal_stride spacing
+        total_frames_needed = (self.input_length + self.max_k_steps - 1) * self.temporal_stride + 1
         self.num_samples = self.num_frames - total_frames_needed + 1
 
         if self.num_samples <= 0:
-            raise ValueError(f"Not enough frames. Need at least {total_frames_needed}, got {self.num_frames}")
+            raise ValueError(
+                f"Not enough frames for temporal_stride={temporal_stride}. "
+                f"Need at least {total_frames_needed}, got {self.num_frames}"
+            )
 
         print(f"Found {self.num_frames} common timesteps across all planes")
+        print(f"Temporal stride: {self.temporal_stride} (effective time scale: {self.temporal_stride}x)")
         print(f"Y-planes: {list(self.files_by_plane.keys())}")
         print(f"Files per plane: {[len(files) for files in self.files_by_plane.values()]}")
 
         # Filter out sequences that span the discontinuity between timestep 1080 and 1081
         # Remove sequences with starting timesteps that would include the discontinuity
         discontinuity_timestep = 1081
-        exclude_start = discontinuity_timestep - total_frames_needed + 1  # Adjusted for max_k_steps
-        exclude_end = discontinuity_timestep  # 1081
+        # exclude_start = discontinuity_timestep - total_frames_needed + 1
+        # exclude_end = discontinuity_timestep
 
         valid_indices = []
         excluded_count = 0
 
         for i in range(self.num_samples):
-            # Get the starting and ending timestep for this sequence
+            # Get the starting timestep for this sequence
             start_timestep = self.timesteps[i]
-            # end_timestep = self.timesteps[i + total_frames_needed - 1]  # (unused)
 
-            # Exclude sequences that would span the discontinuity
-            # This happens if the sequence starts from exclude_start to exclude_end
-            if exclude_start <= start_timestep <= exclude_end:
-                excluded_count += 1
-                print(f"Excluding sequence starting at timestep {start_timestep} (would span discontinuity)")
+            # Check if the sequence would span the discontinuity
+            # The last timestep index in the sequence
+            end_idx = i + total_frames_needed - 1
+            if end_idx < len(self.timesteps):
+                end_timestep = self.timesteps[end_idx]
+
+                # Exclude if the sequence crosses the discontinuity
+                if start_timestep < discontinuity_timestep <= end_timestep:
+                    excluded_count += 1
+                    print(f"Excluding sequence starting at timestep {start_timestep} (would span discontinuity)")
+                else:
+                    valid_indices.append(i)
             else:
                 valid_indices.append(i)
 
@@ -155,7 +170,10 @@ class FlowSequence3PlaneDataset(Dataset):
         else:  # test
             self.indices = [self.valid_base_indices[i] for i in range(train_samples + valid_samples, self.num_samples)]
 
-        print(f"Created {split} dataset with {len(self.indices)} samples from {self.num_frames} files")
+        print(
+            f"Created {split} dataset with {len(self.indices)} samples "
+            f"(temporal_stride={temporal_stride}, effective frames: {self.num_frames})"
+        )
 
         # Get data shape and y_slices from first file
         self._get_data_shape_and_slices(y_slices)
@@ -340,16 +358,21 @@ class FlowSequence3PlaneDataset(Dataset):
         """
         base_idx = self.indices[idx]
         description = (
-            f"dataset: {self.__class__.__name__}, idx: {idx}, planes: {self.y_slices}, fields: {self.field_names}"
+            f"dataset: {self.__class__.__name__}, idx: {idx}, planes: {self.y_slices}, "
+            f"fields: {self.field_names}, temporal_stride: {self.temporal_stride}"
         )
 
         # Load input sequence + target frames for all planes and channels
+        # With temporal stride, we sample every temporal_stride-th timestep
         frames = []
         total_frames_needed = self.input_length + self.max_k_steps
 
         for i in range(total_frames_needed):
+            # Calculate the actual timestep index with temporal stride
+            timestep_idx = base_idx + i * self.temporal_stride
+
             # Get the timestep for this frame
-            timestep = self.timesteps[base_idx + i]
+            timestep = self.timesteps[timestep_idx]
 
             # Load data for all 3 planes at this timestep
             plane_channels = []
@@ -411,6 +434,7 @@ class FlowSequence3PlaneDataset(Dataset):
             "field_names": self.field_names,
             "num_channels_per_plane": self.num_channels_per_plane,
             "num_total_channels": self.num_total_channels,
+            "temporal_stride": self.temporal_stride,
         }
 
         # 详细的通道映射

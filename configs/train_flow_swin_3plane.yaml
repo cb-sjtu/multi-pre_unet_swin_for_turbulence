@@ -18,7 +18,7 @@ defaults:
   - hydra: default
 
 # task name, determines output directory path
-task_name: "flow_swin_3plane"
+task_name: "flow_swin_3plane_2t"
 
 # tags to help you identify your experiments
 # you can overwrite this in experiment configs
@@ -46,7 +46,7 @@ seed: 12345
 
 print_lv: 1
 
-log_project: "turbulence_swin_3plane"
+log_project: "turbulence_swin_3plane_2t"
 
 # Enable training
 train: True

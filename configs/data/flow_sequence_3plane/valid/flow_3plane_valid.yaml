@@ -4,6 +4,7 @@ dataset:
   _target_: src.datasets.flow_sequence_2d.flow_sequence_3plane.FlowSequence3PlaneDataset
   data_dir: ${data.data_folder}
   input_length: 5
+  temporal_stride: 2  # 1=dense sampling, 2=skip 1 timestep, 3=skip 2 timesteps, etc.
   field_names: ["u", "v", "w", "p"]  # 4 fields per plane
   file_pattern: "*u-v-w-p_scale4-6-1_yslice*.h5"  # Match uvwp files
   resolution_scale: [4, 6, 1]  # (z, y, x) downsampling - 与归一化统计匹配
