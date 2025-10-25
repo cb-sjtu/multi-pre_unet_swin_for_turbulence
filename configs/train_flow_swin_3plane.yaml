@@ -69,9 +69,9 @@ scheduled_sampling:
 
 # K-step Rollout Loss Configuration
 k_step_rollout:
-  enabled: true
+  enabled: false
   initial_k_steps: 1
-  max_k_steps: 16
+  max_k_steps: 1
   k_increase_schedule: "curriculum"  # "curriculum", "fixed"
   curriculum_epochs: [80, 120, 160, 200, 300]  # Epochs to increase K
   curriculum_k_values: [1, 1, 1, 1, 1]    # Corresponding K values
@@ -80,7 +80,7 @@ k_step_rollout:
   # Step-wise weights for each rollout step to address gradient dilution
   # Length should match curriculum_k_values. Each value is the weight for that step.
   step_weights: [1.0, 1.2, 1.5, 2.0, 2.5]  # Weights for step 1, 2, 3, 4, 5
-  enable_step_weighting: true  # Enable/disable step-wise weighting
+  enable_step_weighting: false  # Enable/disable step-wise weighting
 
 # Data configuration with k-step parameter
 data:
