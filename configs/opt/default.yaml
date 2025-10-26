@@ -8,14 +8,14 @@
 optimizer:
   _target_: torch.optim.AdamW
   _partial_: True
-  lr: 0.01
+  lr: 0.0005
 
 scheduler:
   _target_: src.opt.schedulers.warmup_cosine_decay_scheduler.PercentageWarmupCosineDecayScheduler
   _partial_: True
   max_iters: ${trainer.max_steps}
-  warmup_percent: 0
+  warmup_percent: 5
   decay_percent: 100
   end_lr_factor: 0.1
 
-gnorm_clip: 0.7
+gnorm_clip: 1
