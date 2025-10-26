@@ -14,7 +14,7 @@ scheduler:
   _target_: src.opt.schedulers.warmup_cosine_decay_scheduler.PercentageWarmupCosineDecayScheduler
   _partial_: True
   max_iters: ${trainer.max_steps}
-  warmup_percent: 10
+  warmup_percent: 20
   decay_percent: 100
   end_lr_factor: 0.1
 
