@@ -38,21 +38,26 @@ from src.datasets.flow_sequence_2d.flow_sequence_3plane import FlowSequence3Plan
 class ThreePlaneModelEvaluator:
     """Evaluator for the 3-plane 4-channel Flow Swin Transformer model."""
 
-    def __init__(self, checkpoint_path: str, model_cfg: DictConfig, save_predictions: bool = False):
+    def __init__(
+        self, checkpoint_path: str, model_cfg: DictConfig, save_predictions: bool = False, temporal_stride: int = 1
+    ):
         """Initialize the evaluator.
 
         Args:
             checkpoint_path: Path to the model checkpoint
             model_cfg: Model configuration from Hydra
             save_predictions: Whether to save prediction results as H5 files
+            temporal_stride: Temporal stride for sparse sampling (must match training)
         """
         self.checkpoint_path = checkpoint_path
         self.model_cfg = model_cfg
         self.save_predictions = save_predictions
+        self.temporal_stride = temporal_stride
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         print(f"Using device: {self.device}")
         print(f"Checkpoint path: {checkpoint_path}")
+        print(f"Temporal stride: {temporal_stride} (must match training configuration)")
 
         # Initialize wandb for evaluation logging
         if WANDB_AVAILABLE:
@@ -159,6 +164,7 @@ class ThreePlaneModelEvaluator:
         train_dataset = FlowSequence3PlaneDataset(
             data_dir=data_dir,
             input_length=5,
+            temporal_stride=self.temporal_stride,
             field_names=field_names,
             file_pattern=file_pattern,
             resolution_scale=resolution_scale,
@@ -174,6 +180,7 @@ class ThreePlaneModelEvaluator:
         val_dataset = FlowSequence3PlaneDataset(
             data_dir=data_dir,
             input_length=5,
+            temporal_stride=self.temporal_stride,
             field_names=field_names,
             file_pattern=file_pattern,
             resolution_scale=resolution_scale,
@@ -189,6 +196,7 @@ class ThreePlaneModelEvaluator:
         test_dataset = FlowSequence3PlaneDataset(
             data_dir=data_dir,
             input_length=5,
+            temporal_stride=self.temporal_stride,
             field_names=field_names,
             file_pattern=file_pattern,
             resolution_scale=resolution_scale,
@@ -233,14 +241,21 @@ class ThreePlaneModelEvaluator:
         return None
 
     def generate_sequence_prediction(self, input_seq: torch.Tensor, num_predictions: int = 5) -> torch.Tensor:
-        """Generate autoregressive sequence predictions."""
+        """Generate autoregressive sequence predictions.
+
+        For temporal_stride > 1, each prediction advances by stride timesteps in the physical timeline.
+        For example, with stride=2:
+        - Input: [t0, t2, t4, t6, t8] → Predict: t10
+        - Input: [t2, t4, t6, t8, t10] → Predict: t12
+        - Input: [t4, t6, t8, t10, t12] → Predict: t14
+        """
         self.model.eval()
         with torch.no_grad():
             predictions = []
             current_input = input_seq.clone()
 
             for _ in range(num_predictions):
-                # Predict next frame
+                # Predict next frame (which is temporal_stride steps ahead in physical time)
                 next_pred = self.model(current_input)  # (B, C, H, W)
                 predictions.append(next_pred)
 
@@ -253,31 +268,76 @@ class ThreePlaneModelEvaluator:
 
         return pred_seq
 
+    def _get_ground_truth_for_autoregressive(self, sample_idx: int, num_future: int, dataset):
+        """Get ground truth frames that align with autoregressive predictions.
+
+        For temporal_stride > 1, predictions are spaced by stride timesteps.
+        This method retrieves the corresponding ground truth frames.
+
+        Args:
+            sample_idx: Starting sample index in the dataset
+            num_future: Number of future predictions
+            dataset: The dataset to retrieve ground truth from
+
+        Returns:
+            List of ground truth frames (each is a numpy array of shape (C, H, W))
+        """
+        ground_truth_frames = []
+
+        # For each prediction step, we need to find the corresponding ground truth
+        # Since each autoregressive step advances by temporal_stride in physical time,
+        # and consecutive dataset samples advance by 1 in base_idx (which means 1 physical timestep),
+        # we need to skip temporal_stride samples for each prediction
+
+        for i in range(num_future):
+            # Calculate which dataset sample contains the ground truth for this prediction
+            # Prediction i corresponds to i * temporal_stride steps ahead from the initial sample
+            # The label of dataset[sample_idx + i*stride] is exactly what we predicted
+            gt_sample_idx = sample_idx + i * self.temporal_stride
+
+            if gt_sample_idx < len(dataset):
+                try:
+                    # Get the label from this sample, which is the ground truth for prediction i
+                    sample_i = dataset[gt_sample_idx]
+                    target_i = sample_i["label"]  # (1, 1, C, H, W) - the label is our ground truth
+                    target_denorm = dataset.denormalize(target_i)
+                    target_frame = target_denorm.cpu().numpy()[0, 0]  # (C, H, W)
+                    ground_truth_frames.append(target_frame)
+                except (IndexError, KeyError) as e:
+                    print(f"Warning: Cannot retrieve ground truth for prediction step {i + 1}: {e}")
+                    if ground_truth_frames:
+                        ground_truth_frames.append(ground_truth_frames[-1])
+                    else:
+                        break
+            else:
+                print(
+                    f"Warning: Not enough data for ground truth at prediction step\
+                          {i + 1} (index {gt_sample_idx} >= {len(dataset)})"
+                )
+                if ground_truth_frames:
+                    ground_truth_frames.append(ground_truth_frames[-1])
+                else:
+                    break
+
+        return ground_truth_frames
+
     def visualize_3plane_prediction(self, sample_idx: int = 0, num_future: int = 20):
         """Visualize 3-plane 4-channel prediction with comprehensive comparison."""
         print(f"Visualizing 3-plane sample {sample_idx} with {num_future} future steps...")
+        print(
+            f"Note: With temporal_stride={self.temporal_stride}\
+                , predictions cover {num_future * self.temporal_stride} physical timesteps"
+        )
 
         # Get sample and generate predictions
         sample = self.test_dataset[sample_idx]
         input_seq = sample["data"]["input_seq"].to(self.device)
-        # target_seq = sample["label"]  # Ground truth targets (unused)
 
         # Generate predictions
         pred_seq = self.generate_sequence_prediction(input_seq, num_future)
 
-        # Get ground truth sequence for proper comparison
-        ground_truth_frames = []
-        for i in range(num_future):
-            if sample_idx + i < len(self.test_dataset):
-                sample_i = self.test_dataset[sample_idx + i]
-                target_i = sample_i["label"]  # (1, 1, C, H, W) or similar
-                target_denorm = self.test_dataset.denormalize(target_i)
-                target_frame = target_denorm.cpu().numpy()[0, 0]  # (C, H, W)
-                ground_truth_frames.append(target_frame)
-            else:
-                # Repeat last frame if not enough samples
-                if ground_truth_frames:
-                    ground_truth_frames.append(ground_truth_frames[-1])
+        # Get ground truth sequence using the correct temporal alignment
+        ground_truth_frames = self._get_ground_truth_for_autoregressive(sample_idx, num_future, self.test_dataset)
 
         # Denormalize predictions
         input_seq_denorm = self.test_dataset.denormalize(input_seq)
@@ -736,6 +796,10 @@ class ThreePlaneModelEvaluator:
     def visualize_autoregressive(self, split: str = "train", sample_idx: int = 0, num_future: int = 20):
         """Evaluate using autoregressive prediction for train/val data."""
         print(f"\nEvaluating {split} data with autoregressive prediction...")
+        print(
+            f"Note: With temporal_stride={self.temporal_stride}, \
+                predictions cover {num_future * self.temporal_stride} physical timesteps"
+        )
 
         if split == "train":
             dataset = self.train_dataset
@@ -744,18 +808,8 @@ class ThreePlaneModelEvaluator:
         else:
             raise ValueError("Only 'train' and 'val' splits supported for autoregressive")
 
-        # Get ground truth sequence
-        ground_truth_frames = []
-        for i in range(num_future):
-            if sample_idx + i < len(dataset):
-                sample_i = dataset[sample_idx + i]
-                target_i = sample_i["label"]  # (1, 1, C, H, W)
-                target_denorm = dataset.denormalize(target_i)
-                target_frame = target_denorm.cpu().numpy()[0, 0]  # (C, H, W)
-                ground_truth_frames.append(target_frame)
-            else:
-                if ground_truth_frames:
-                    ground_truth_frames.append(ground_truth_frames[-1])
+        # Get ground truth sequence using the correct temporal alignment
+        ground_truth_frames = self._get_ground_truth_for_autoregressive(sample_idx, num_future, dataset)
 
         # Get initial sample for autoregressive prediction
         sample = dataset[sample_idx]
@@ -1432,26 +1486,17 @@ class ThreePlaneModelEvaluator:
         # Remove batch dimension: (T_pred, C, H, W)
         pred_frames_array = pred_frames_denorm[0]  # Take first (and only) batch
 
-        # Collect corresponding ground truth frames
+        # Collect corresponding ground truth frames using correct temporal alignment
         print("Collecting ground truth frames...")
-        ground_truth_frames = []
-        for i in range(num_future):
-            if sample_idx + i + 1 < len(self.test_dataset):  # +1 because first prediction is t+1
-                gt_sample = self.test_dataset[sample_idx + i + 1]
-                gt_frame = gt_sample["data"]["input_seq"][:, -1:, :, :, :]  # Get last frame
-                gt_frame_denorm = self.test_dataset.denormalize(gt_frame).cpu().numpy()[0, 0]  # (C, H, W)
-                ground_truth_frames.append(gt_frame_denorm)
-            else:
-                # If we run out of ground truth data, duplicate the last frame
-                if ground_truth_frames:
-                    ground_truth_frames.append(ground_truth_frames[-1])
-                else:
-                    # Use a zero frame as fallback
-                    zero_frame = np.zeros_like(pred_frames_array[0])
-                    ground_truth_frames.append(zero_frame)
+        ground_truth_frames = self._get_ground_truth_for_autoregressive(sample_idx, num_future, self.test_dataset)
 
         # Convert to numpy array: (T, C, H, W)
-        gt_frames_array = np.stack(ground_truth_frames, axis=0)
+        if ground_truth_frames:
+            gt_frames_array = np.stack(ground_truth_frames, axis=0)
+        else:
+            # Fallback to zeros if no ground truth available
+            print("Warning: No ground truth frames available, using zeros")
+            gt_frames_array = np.zeros_like(pred_frames_array)
 
         print(f"Prediction frames shape: {pred_frames_array.shape}")
         print(f"Ground truth frames shape: {gt_frames_array.shape}")
@@ -1604,6 +1649,12 @@ def main():
     parser.add_argument("--num_samples", type=int, default=1, help="Number of samples to evaluate")
     parser.add_argument("--num_future", type=int, default=100, help="Number of future steps to predict")
     parser.add_argument("--save_predictions", action="store_true", help="Save predictions as H5 files")
+    parser.add_argument(
+        "--temporal_stride",
+        type=int,
+        default=1,
+        help="Temporal stride for sparse sampling (must match training configuration)",
+    )
 
     args = parser.parse_args()
 
@@ -1613,8 +1664,8 @@ def main():
     else:
         # Default to the hardcoded path if no argument provided
         checkpoint_path = (
-            "/home/sh/CB/icon-thewell-dev/logs/flow_swin_3plane/runs/"
-            "2025-09-23_00-07-38-305868/checkpoints/step_34200.ckpt"
+            "/home/sh/CB/icon-thewell-dev/logs/flow_swin_3plane_2t"
+            "/runs/2025-10-25_17-44-43-005940/checkpoints/step_49800.ckpt"
         )
 
     # Load model config (simplified for direct usage)
@@ -1642,7 +1693,10 @@ def main():
 
     # Create evaluator and run evaluation
     evaluator = ThreePlaneModelEvaluator(
-        checkpoint_path=checkpoint_path, model_cfg=model_cfg, save_predictions=args.save_predictions
+        checkpoint_path=checkpoint_path,
+        model_cfg=model_cfg,
+        save_predictions=args.save_predictions,
+        temporal_stride=args.temporal_stride,
     )
 
     evaluator.run_comprehensive_evaluation(num_samples=args.num_samples, num_future=args.num_future)
