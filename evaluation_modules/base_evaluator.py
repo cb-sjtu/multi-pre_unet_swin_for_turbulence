@@ -91,6 +91,21 @@ class BaseFlowEvaluator:
         print(f"  Save predictions: {save_predictions}")
         print(f"  Monitor points: {len(self.time_monitor.monitor_points)}")
 
+    def _detect_wandb_project(self) -> str:
+        """Detect W&B project name from checkpoint path."""
+        checkpoint_path_str = str(self.checkpoint_path)
+
+        # Detect based on path patterns
+        if "flow_lstm_3plane" in checkpoint_path_str:
+            return "turbulence_lstm_3plane"
+        elif "flow_swin_3plane" in checkpoint_path_str:
+            return "turbulence_swin_3plane"
+        elif "3plane" in checkpoint_path_str or "3-plane" in checkpoint_path_str:
+            return "flow-3plane-evaluation"
+        else:
+            # Default fallback
+            return "flow-evaluation"
+
     def _init_wandb(self):
         """Initialize wandb if available."""
         if not WANDB_AVAILABLE:
@@ -98,8 +113,12 @@ class BaseFlowEvaluator:
             return
 
         try:
+            # Detect project name from checkpoint path
+            project_name = self._detect_wandb_project()
+            print(f"Initializing W&B with project: {project_name}")
+
             self.wandb_run = wandb.init(
-                project="flow-evaluation", name=f"eval_{Path(self.checkpoint_path).stem}", job_type="evaluation"
+                project=project_name, name=f"eval_{Path(self.checkpoint_path).stem}", job_type="evaluation"
             )
         except Exception as e:
             print(f"Failed to initialize wandb: {e}")

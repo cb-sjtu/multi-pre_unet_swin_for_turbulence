@@ -215,8 +215,8 @@ def main() -> None:
     # Use default checkpoint path if not provided
     if args.checkpoint_path is None:
         args.checkpoint_path = (
-            "/home/sh/CB/icon-thewell-dev/logs/flow_swin_3plane/runs/"
-            "2025-09-23_00-07-38-305868/checkpoints/step_34200.ckpt"
+            "/home/sh/CB/icon-thewell-dev/logs/flow_lstm_3plane"
+            "/runs/2025-10-26_12-14-53-336652/checkpoints/step_13200.ckpt"
         )
         print(f"Using default checkpoint: {args.checkpoint_path}")
 

@@ -59,24 +59,27 @@ class ThreePlaneModelEvaluator:
             log_dir_name = self._extract_log_dir_name()
             training_run_id = self._extract_wandb_run_id()
 
+            # Detect W&B project name from checkpoint path
+            wandb_project = self._detect_wandb_project()
+
             if training_run_id:
                 print(f"Found training run ID: {training_run_id}")
                 try:
                     # Try to resume the training run
                     self.wandb_run = wandb.init(
-                        project="turbulence_swin_3plane",
+                        project=wandb_project,
                         id=training_run_id,
                         resume="allow",
-                        tags=["evaluation", "flow", "swin", "3plane", "12channel"],
+                        tags=["evaluation", "flow", "3plane", "12channel"],
                     )
                     print("Successfully resumed training wandb run for evaluation logging")
                 except Exception as e:
                     print(f"Could not resume training run: {e}")
                     # Fallback: create a new linked run
                     self.wandb_run = wandb.init(
-                        project="turbulence_swin_3plane",
+                        project=wandb_project,
                         name=f"evaluation_{log_dir_name}",
-                        tags=["evaluation", "flow", "swin", "3plane", "12channel"],
+                        tags=["evaluation", "flow", "3plane", "12channel"],
                         config={
                             "checkpoint_path": checkpoint_path,
                             "device": str(self.device),
@@ -89,9 +92,9 @@ class ThreePlaneModelEvaluator:
                 print("No training wandb run ID found, creating new evaluation run...")
                 # Create new evaluation run
                 self.wandb_run = wandb.init(
-                    project="turbulence_swin_3plane",
+                    project=wandb_project,
                     name=f"evaluation_{log_dir_name}",
-                    tags=["evaluation", "flow", "swin", "3plane", "12channel"],
+                    tags=["evaluation", "flow", "3plane", "12channel"],
                     config={
                         "checkpoint_path": checkpoint_path,
                         "device": str(self.device),
@@ -211,6 +214,19 @@ class ThreePlaneModelEvaluator:
         checkpoint_path = Path(self.checkpoint_path)
         run_dir = checkpoint_path.parent.parent.name
         return run_dir
+
+    def _detect_wandb_project(self) -> str:
+        """Detect W&B project name from checkpoint path."""
+        checkpoint_path_str = str(self.checkpoint_path)
+
+        # Detect based on path patterns
+        if "flow_lstm_3plane" in checkpoint_path_str:
+            return "turbulence_lstm_3plane"
+        elif "flow_swin_3plane" in checkpoint_path_str:
+            return "turbulence_swin_3plane"
+        else:
+            # Default fallback
+            return "turbulence_3plane_evaluation"
 
     def _extract_wandb_run_id(self) -> str:
         """Extract wandb run ID from the training logs."""
@@ -1613,32 +1629,40 @@ def main():
     else:
         # Default to the hardcoded path if no argument provided
         checkpoint_path = (
-            "/home/sh/CB/icon-thewell-dev/logs/flow_swin_3plane/runs/"
-            "2025-09-23_00-07-38-305868/checkpoints/step_34200.ckpt"
+            "/home/sh/CB/icon-thewell-dev/logs/flow_lstm_3plane"
+            "/runs/2025-10-26_12-14-53-336652/checkpoints/step_13200.ckpt"
         )
 
-    # Load model config (simplified for direct usage)
+    # Load model config from checkpoint
+    import torch
     from omegaconf import OmegaConf
 
-    # Create a basic model config for 3-plane model
-    model_cfg = OmegaConf.create(
-        {
-            "input_shape": [128, 128],
-            "sequence_length": 5,
-            "prediction_horizon": 1,
-            "num_channels": 12,
-            "patch_size": [4, 4],
-            "embed_dim": 128,
-            "depths": [2, 2, 4, 6, 4, 2, 2],
-            "num_heads": 8,
-            "window_size": [8, 8],
-            "mlp_ratio": 4.0,
-            "qkv_bias": True,
-            "drop_rate": 0.1,
-            "attn_drop_rate": 0.1,
-            "drop_path_rate": 0.1,
-        }
-    )
+    print("Loading checkpoint to extract model config...")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+    # Try to get model config from checkpoint's hyperparameters
+    if "hyper_parameters" in checkpoint and "cfg" in checkpoint["hyper_parameters"]:
+        # Extract model config from saved hyperparameters
+        cfg = checkpoint["hyper_parameters"]["cfg"]
+        if hasattr(cfg, "model"):
+            model_cfg = cfg.model
+            print("✓ Loaded model config from checkpoint hyperparameters")
+        else:
+            model_cfg = cfg
+            print("✓ Using full config from checkpoint")
+    else:
+        # Fallback: create a minimal config that works for both Swin and LSTM
+        print("⚠ No hyperparameters in checkpoint, using minimal config")
+        model_cfg = OmegaConf.create(
+            {
+                "input_shape": [128, 128],
+                "sequence_length": 5,
+                "prediction_horizon": 1,
+                "num_channels": 12,
+            }
+        )
+
+    print(f"Model config: {OmegaConf.to_yaml(model_cfg)}")
 
     # Create evaluator and run evaluation
     evaluator = ThreePlaneModelEvaluator(
