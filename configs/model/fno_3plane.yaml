@@ -1,0 +1,12 @@
+_target_: src.models.nop.fno_2d_temporal.FNO2DTemporalModel
+
+input_shape: [128, 128]  # 2D shape (z, x) - using downsampled resolution
+sequence_length: 5
+prediction_horizon: 1
+num_channels: 12  # 3 planes × 4 fields (u,v,w,p) = 12 channels
+hidden_channels: 64  # Hidden dimension for FNO layers
+num_layers: 4  # Number of FNO layers
+num_modes: [16, 16]  # Number of Fourier modes to keep in [height, width] directions
+lifting_channels: 128  # Channels for lifting operation (default: hidden_channels * 2)
+projection_channels: 128  # Channels for projection operation (default: hidden_channels * 2)
+use_mlp: false  # Whether to use MLP layers (controlled by channel_mlp_expansion in neuralop)
