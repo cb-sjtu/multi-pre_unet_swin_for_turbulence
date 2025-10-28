@@ -1444,7 +1444,7 @@ class ThreePlaneModelEvaluator:
 
         print(f"Energy spectra plotting for {mode} completed.")
 
-    def _run_energy_spectra_analysis(self, num_future: int = 50, sample_idx: int = 0):
+    def _run_energy_spectra_analysis(self, num_future: int = 20, sample_idx: int = 0):
         """
         Run energy spectra analysis on both autoregressive predictions and ground truth.
 
@@ -1643,7 +1643,7 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate 3-plane Flow Swin Transformer")
     parser.add_argument("--checkpoint_path", type=str, help="Path to model checkpoint")
     parser.add_argument("--num_samples", type=int, default=1, help="Number of samples to evaluate")
-    parser.add_argument("--num_future", type=int, default=50, help="Number of future steps to predict")
+    parser.add_argument("--num_future", type=int, default=20, help="Number of future steps to predict")
     parser.add_argument("--save_predictions", action="store_true", help="Save predictions as H5 files")
 
     args = parser.parse_args()
