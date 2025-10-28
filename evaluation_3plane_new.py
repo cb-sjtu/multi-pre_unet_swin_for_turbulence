@@ -43,7 +43,7 @@ warnings.filterwarnings("ignore")
 # ========================================
 # 🎯 CONFIGURATION: Modify this value to change prediction length everywhere
 # ========================================
-DEFAULT_FUTURE_STEPS = 30  # Number of future steps to predict for 3-plane
+DEFAULT_FUTURE_STEPS = 100  # Number of future steps to predict for 3-plane
 
 
 def create_3plane_monitor_points():
