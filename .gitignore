@@ -209,5 +209,6 @@ debug_test
 # evaluation results
 wandb/
 
+spectrum_comparison_results/
 # ------------------------------------------------------------------------------------------------
 # The following are for project-specific configs
