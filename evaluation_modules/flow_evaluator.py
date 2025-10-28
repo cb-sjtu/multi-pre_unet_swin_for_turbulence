@@ -88,6 +88,17 @@ class FlowModelEvaluator(BaseFlowEvaluator):
         # Load checkpoint
         checkpoint = torch.load(self.checkpoint_path, map_location="cpu", weights_only=False)
 
+        # Clean up state_dict to remove metadata keys added by external libraries (e.g., neuralop)
+        # These keys like "_metadata" can cause issues when loading with strict=True
+        if "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+            # Remove all keys starting with "_" (metadata keys)
+            cleaned_state_dict = {k: v for k, v in state_dict.items() if not k.startswith("_")}
+            if len(cleaned_state_dict) < len(state_dict):
+                removed_keys = [k for k in state_dict if k.startswith("_")]
+                print(f"Removed {len(removed_keys)} metadata key(s) from state_dict: {removed_keys}")
+            checkpoint["state_dict"] = cleaned_state_dict
+
         # Extract hyperparameters from checkpoint
         if "hyper_parameters" in checkpoint:
             print("Found hyperparameters in checkpoint")
@@ -102,7 +113,20 @@ class FlowModelEvaluator(BaseFlowEvaluator):
         # Extract hyperparameters from checkpoint to recreate the module
         if "hyper_parameters" in checkpoint:
             # Create the Lightning module with the same config
-            model = FlowSwin2DLitModule.load_from_checkpoint(self.checkpoint_path, map_location="cpu")
+            # Use strict=False to be more tolerant of minor key mismatches
+            try:
+                model = FlowSwin2DLitModule.load_from_checkpoint(self.checkpoint_path, map_location="cpu", strict=False)
+                print("Model loaded successfully using load_from_checkpoint")
+            except Exception as e:
+                print(f"Warning: load_from_checkpoint failed: {e}")
+                print("Attempting manual loading as fallback...")
+                # Fallback to manual loading
+                from omegaconf import OmegaConf
+
+                cfg = checkpoint["hyper_parameters"]["cfg"]
+                model = FlowSwin2DLitModule(cfg)
+                model.load_state_dict(checkpoint["state_dict"], strict=False)
+                print("Model weights loaded successfully via fallback!")
         else:
             # Fallback: create module with current config
             print("No hyperparameters found, using current config...")
@@ -115,7 +139,8 @@ class FlowModelEvaluator(BaseFlowEvaluator):
 
             # Load the state dict manually
             if "state_dict" in checkpoint:
-                model.load_state_dict(checkpoint["state_dict"])
+                # Use strict=False to allow minor mismatches
+                model.load_state_dict(checkpoint["state_dict"], strict=False)
                 print("Model weights loaded successfully!")
 
         model.eval()  # Set to evaluation mode

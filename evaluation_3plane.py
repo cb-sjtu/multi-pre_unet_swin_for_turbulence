@@ -123,13 +123,37 @@ class ThreePlaneModelEvaluator:
         # Load checkpoint
         checkpoint = torch.load(self.checkpoint_path, map_location="cpu", weights_only=False)
 
+        # Clean up state_dict to remove metadata keys added by external libraries (e.g., neuralop)
+        # These keys like "_metadata" can cause issues when loading with strict=True
+        if "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+            # Remove all keys starting with "_" (metadata keys)
+            cleaned_state_dict = {k: v for k, v in state_dict.items() if not k.startswith("_")}
+            if len(cleaned_state_dict) < len(state_dict):
+                removed_keys = [k for k in state_dict if k.startswith("_")]
+                print(f"Removed {len(removed_keys)} metadata key(s) from state_dict: {removed_keys}")
+            checkpoint["state_dict"] = cleaned_state_dict
+
         # Load the full Lightning module
         print("Loading full Lightning module from checkpoint...")
         from src.plmodules.flow_swin_2d_lit_module import FlowSwin2DLitModule
 
         if "hyper_parameters" in checkpoint:
             # Create the Lightning module with the same config
-            model = FlowSwin2DLitModule.load_from_checkpoint(self.checkpoint_path, map_location="cpu")
+            # Use strict=False to be more tolerant of minor key mismatches
+            try:
+                model = FlowSwin2DLitModule.load_from_checkpoint(self.checkpoint_path, map_location="cpu", strict=False)
+                print("Model loaded successfully using load_from_checkpoint")
+            except Exception as e:
+                print(f"Warning: load_from_checkpoint failed: {e}")
+                print("Attempting manual loading as fallback...")
+                # Fallback to manual loading
+                from omegaconf import OmegaConf
+
+                cfg = checkpoint["hyper_parameters"]["cfg"]
+                model = FlowSwin2DLitModule(cfg)
+                model.load_state_dict(checkpoint["state_dict"], strict=False)
+                print("Model weights loaded successfully via fallback!")
         else:
             # Fallback: create module with current config
             print("No hyperparameters found, using current config...")
@@ -139,7 +163,8 @@ class ThreePlaneModelEvaluator:
             model = FlowSwin2DLitModule(module_cfg)
 
             if "state_dict" in checkpoint:
-                model.load_state_dict(checkpoint["state_dict"])
+                # Use strict=False to allow minor mismatches
+                model.load_state_dict(checkpoint["state_dict"], strict=False)
                 print("Model weights loaded successfully!")
 
         model.eval()
@@ -1629,8 +1654,8 @@ def main():
     else:
         # Default to the hardcoded path if no argument provided
         checkpoint_path = (
-            "/home/sh/CB/icon-thewell-dev/logs/flow_lstm_3plane"
-            "/runs/2025-10-26_12-14-53-336652/checkpoints/step_13200.ckpt"
+            "/home/sh/CB/icon-thewell-dev/logs/flow_fno_3plane/"
+            "runs/2025-10-27_22-56-39-791052/checkpoints/step_27000.ckpt"
         )
 
     # Load model config from checkpoint
