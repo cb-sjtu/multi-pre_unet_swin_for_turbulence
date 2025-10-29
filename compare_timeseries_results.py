@@ -29,7 +29,7 @@ warnings.filterwarnings("ignore")
 class TimeSeriesComparator:
     """时间序列对比器 - 用于对比多个模型的时间序列预测"""
 
-    def __init__(self, run_dirs, model_names=None, output_dir="timeseries_comparison_results"):
+    def __init__(self, run_dirs, model_names=None, output_dir="timeseries_comparison_results", max_timesteps=None):
         """
         初始化对比器
 
@@ -37,8 +37,10 @@ class TimeSeriesComparator:
             run_dirs: 训练run目录列表
             model_names: 模型名称列表（可选）
             output_dir: 输出目录
+            max_timesteps: 最大显示的时间步数（None表示显示所有）
         """
         self.run_dirs = [Path(d) for d in run_dirs]
+        self.max_timesteps = max_timesteps
 
         # 验证所有目录存在
         for run_dir in self.run_dirs:
@@ -175,7 +177,14 @@ class TimeSeriesComparator:
         fig, axes = plt.subplots(2, 2, figsize=(16, 10))
         axes = axes.flatten()
 
-        colors = plt.cm.tab10(np.linspace(0, 1, len(self.model_names)))
+        # 为每个模型分配颜色，Swin使用红色
+        colors = []
+        default_colors = plt.cm.tab10(np.linspace(0, 1, len(self.model_names)))
+        for i, model_name in enumerate(self.model_names):
+            if model_name.lower() == "swin":
+                colors.append("red")
+            else:
+                colors.append(default_colors[i])
 
         for field_idx, field in enumerate(self.fields):
             ax = axes[field_idx]
@@ -193,7 +202,15 @@ class TimeSeriesComparator:
                     break
 
             if gt_data is not None:
-                ax.plot(timesteps, gt_data, "k-", linewidth=2, label="Ground Truth", alpha=0.8)
+                # 如果指定了最大时间步数，则截取数据
+                if self.max_timesteps is not None and len(timesteps) > self.max_timesteps:
+                    timesteps_plot = timesteps[: self.max_timesteps]
+                    gt_data_plot = gt_data[: self.max_timesteps]
+                else:
+                    timesteps_plot = timesteps
+                    gt_data_plot = gt_data
+
+                ax.plot(timesteps_plot, gt_data_plot, "k-", linewidth=2, label="Ground Truth", alpha=0.8)
 
             # 绘制每个模型的预测
             for i, (df, model_name) in enumerate(zip(dfs, self.model_names, strict=False)):
@@ -205,7 +222,24 @@ class TimeSeriesComparator:
                 if pred_col in df.columns:
                     pred_data = df[pred_col].values
                     timesteps = df["timestep"].values
-                    ax.plot(timesteps, pred_data, "--", linewidth=1.5, color=colors[i], label=model_name, alpha=0.7)
+
+                    # 如果指定了最大时间步数，则截取数据
+                    if self.max_timesteps is not None and len(timesteps) > self.max_timesteps:
+                        timesteps_plot = timesteps[: self.max_timesteps]
+                        pred_data_plot = pred_data[: self.max_timesteps]
+                    else:
+                        timesteps_plot = timesteps
+                        pred_data_plot = pred_data
+
+                    ax.plot(
+                        timesteps_plot,
+                        pred_data_plot,
+                        "--",
+                        linewidth=1.5,
+                        color=colors[i],
+                        label=model_name,
+                        alpha=0.7,
+                    )
 
             ax.set_xlabel("Timestep", fontsize=11)
             ax.set_ylabel(f"{field.upper()}", fontsize=11)
@@ -281,6 +315,10 @@ class TimeSeriesComparator:
         print(f"  - 采样点: {len(point_info_list)} 个")
         print(f"  - 模式: {', '.join(modes)}")
         print(f"  - 模型: {len(self.model_names)} 个 ({', '.join(self.model_names)})")
+        if self.max_timesteps is not None:
+            print(f"  - 时间步: 前 {self.max_timesteps} 步")
+        else:
+            print("  - 时间步: 全部")
 
 
 def main():
@@ -309,6 +347,12 @@ def main():
       run1 run2 run3 \\
       --model-names "M1" "M2" "M3" \\
       --modes tf
+
+  # 只显示前50个时间步
+  python compare_timeseries_results.py \\
+      run1 run2 \\
+      --model-names "M1" "M2" \\
+      --max-timesteps 50
         """,
     )
 
@@ -348,6 +392,13 @@ def main():
         help="要对比的点索引列表。如果不指定，对比所有点",
     )
 
+    parser.add_argument(
+        "--max-timesteps",
+        type=int,
+        default=None,
+        help="最大显示的时间步数。如果不指定，显示所有时间步（例如：--max-timesteps 50 只显示前50步）",
+    )
+
     args = parser.parse_args()
 
     # 验证参数
@@ -357,7 +408,10 @@ def main():
     # 创建对比器
     try:
         comparator = TimeSeriesComparator(
-            run_dirs=args.run_dirs, model_names=args.model_names, output_dir=args.output_dir
+            run_dirs=args.run_dirs,
+            model_names=args.model_names,
+            output_dir=args.output_dir,
+            max_timesteps=args.max_timesteps,
         )
 
         # 运行对比

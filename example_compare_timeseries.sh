@@ -106,3 +106,21 @@ echo "  ls -lh timeseries_comparison_*/"
 echo ""
 echo "或打开图片查看器:"
 echo "  eog timeseries_comparison_all/*.png &"
+echo ""
+
+# 示例 5: 只显示前50个时间步
+echo "=========================================="
+echo "示例 5: 只显示前50个时间步"
+echo "=========================================="
+python compare_timeseries_results.py \
+    "$FNO_RUN" \
+    "$LSTM_RUN" \
+    "$SWIN_RUN" \
+    --model-names "FNO" "LSTM" "Swin" \
+    --max-timesteps 50 \
+    --output-dir timeseries_comparison_50steps
+
+echo ""
+echo "✓ 结果保存在: timeseries_comparison_50steps/"
+echo "  (只显示前50个时间步)"
+echo ""

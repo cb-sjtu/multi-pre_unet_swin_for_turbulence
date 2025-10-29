@@ -56,6 +56,23 @@ python compare_timeseries_results.py \
     --output-dir my_timeseries_comparison
 ```
 
+### 限制显示的时间步数
+
+```bash
+# 只显示前50个时间步
+python compare_timeseries_results.py \
+    run1 run2 run3 \
+    --model-names "FNO" "LSTM" "Swin" \
+    --max-timesteps 50
+
+# 只显示前20个时间步，只对比特定点
+python compare_timeseries_results.py \
+    run1 run2 \
+    --model-names "Model-A" "Model-B" \
+    --max-timesteps 20 \
+    --points 0 9 18
+```
+
 ### 只对比特定模式
 
 ```bash
@@ -182,6 +199,7 @@ python compare_timeseries_results.py \
   - 采样点: 27 个
   - 模式: tf, ar
   - 模型: 3 个 (FNO, LSTM, Swin)
+  - 时间步: 全部
 ```
 
 ### 示例 2: 只对比特定的点
@@ -211,6 +229,34 @@ python compare_timeseries_results.py \
 ```
 
 **输出**: 只生成 27 个点 × 1 种模式 = 27 张图片
+
+### 示例 5: 只显示部分时间步
+
+```bash
+python compare_timeseries_results.py \
+    logs/flow_fno_3plane/runs/2025-10-27_22-56-39-791052 \
+    logs/flow_lstm_3plane/runs/2025-10-26_12-14-53-336652 \
+    logs/flow_swin_3plane/runs/2025-09-22_11-09-35-088845 \
+    --model-names "FNO" "LSTM" "Swin" \
+    --max-timesteps 50 \
+    --output-dir timeseries_50steps
+```
+
+**输出**: 生成 54 张图片，每张图只显示前 50 个时间步
+
+**配置信息**:
+```
+对比的配置:
+  - 采样点: 27 个
+  - 模式: tf, ar
+  - 模型: 3 个 (FNO, LSTM, Swin)
+  - 时间步: 前 50 步
+```
+
+**使用场景**:
+- 当完整时间序列太长时，可以只关注前面的时间步
+- 对比模型在短期预测上的差异
+- 生成更清晰、更易读的对比图（时间步太多会导致曲线拥挤）
 
 ## 数据要求
 
