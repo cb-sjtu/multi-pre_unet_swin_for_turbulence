@@ -111,25 +111,54 @@ class SpectrumComparator:
         gt_data = self.load_spectrum_data(self.result_dirs[0], plane, field, spectrum_type, "ground_truth")
 
         if gt_data is not None:
-            k = np.arange(len(gt_data))
-            ax.loglog(k, gt_data, "k-", linewidth=2, label="Ground Truth", alpha=0.8)
+            # 计算真实的波数坐标
+            # 假设数据尺寸为 128x128，dx=dz=1.0（与 evaluation_3plane.py 一致）
+            N = len(gt_data)
+            k_full = np.fft.fftfreq(N, 1.0)  # 完整的波数（包含正负频率）
+
+            # 只取正频率部分（物理上有意义的部分）
+            k_pos_mask = k_full > 0
+            k_pos = k_full[k_pos_mask]
+            gt_data_pos = gt_data[k_pos_mask]
+
+            ax.loglog(k_pos, gt_data_pos, "k-", linewidth=2, label="Ground Truth", alpha=0.8)
 
         # 加载并绘制每个模型的预测结果
-        colors = plt.cm.tab10(np.linspace(0, 1, len(self.model_names)))
+        # 使用自定义颜色：Swin Transformer 使用红色
+        colors = []
+        for model_name in self.model_names:
+            if "Swin" in model_name:
+                colors.append("red")
+            else:
+                colors.append(None)  # 使用默认颜色
+
+        # 为非Swin模型分配tab10颜色
+        default_colors = plt.cm.tab10(np.linspace(0, 1, len(self.model_names)))
+        for i in range(len(colors)):
+            if colors[i] is None:
+                colors[i] = default_colors[i]
 
         for i, (result_dir, model_name) in enumerate(zip(self.result_dirs, self.model_names, strict=False)):
             pred_data = self.load_spectrum_data(result_dir, plane, field, spectrum_type, "prediction")
 
             if pred_data is not None:
-                k = np.arange(len(pred_data))
-                ax.loglog(k, pred_data, "--", linewidth=1.5, color=colors[i], label=model_name, alpha=0.7)
+                # 计算真实的波数坐标（只取正频率）
+                N = len(pred_data)
+                k_full = np.fft.fftfreq(N, 1.0)
+                k_pos_mask = k_full > 0
+                k_pos = k_full[k_pos_mask]
+                pred_data_pos = pred_data[k_pos_mask]
+
+                ax.loglog(k_pos, pred_data_pos, "--", linewidth=1.5, color=colors[i], label=model_name, alpha=0.7)
 
         # 添加参考线 (k^-5/3 for Kolmogorov spectrum)
         if gt_data is not None:
-            k_ref = np.logspace(0, np.log10(len(gt_data) // 2), 50)
-            # 调整参考线使其与数据对齐
-            ref_scale = gt_data[10] / (k_ref[10] ** (-5 / 3))
-            ax.loglog(k_ref, ref_scale * k_ref ** (-5 / 3), "r:", linewidth=1, label=r"$k^{-5/3}$", alpha=0.5)
+            # 使用正频率的波数范围
+            k_ref = np.logspace(np.log10(k_pos[0]), np.log10(k_pos[-1]), 50)
+            # 调整参考线使其与数据对齐（使用第10个正频率点）
+            if len(gt_data_pos) > 10:
+                ref_scale = gt_data_pos[10] / (k_ref[10] ** (-5 / 3))
+                ax.loglog(k_ref, ref_scale * k_ref ** (-5 / 3), "r:", linewidth=1, label=r"$k^{-5/3}$", alpha=0.5)
 
         ax.set_xlabel(f"Wavenumber {spectrum_type}", fontsize=12)
         ax.set_ylabel("Energy", fontsize=12)
@@ -169,6 +198,17 @@ class SpectrumComparator:
             print("  ⚠ 无有效数据，跳过")
             return
 
+        # 计算真实的波数坐标范围（用于设置 extent）
+        # 2D 谱存储顺序：[0, 正频, 负频] x [0, 正频, 负频]
+        if gt_data is not None:
+            H, W = gt_data.shape
+            kx = np.fft.fftfreq(W, 1.0)
+            kz = np.fft.fftfreq(H, 1.0)
+            # extent 参数：[left, right, bottom, top]
+            extent = [kx.min(), kx.max(), kz.min(), kz.max()]
+        else:
+            extent = None
+
         # 创建子图：GT + 每个模型 + 差异图
         n_models = len(self.model_names)
         n_cols = min(4, 2 + n_models)  # GT, models, 最多4列
@@ -192,12 +232,14 @@ class SpectrumComparator:
                 np.log10(gt_data + 1e-20),
                 cmap="viridis",
                 aspect="auto",
+                origin="lower",
+                extent=extent,
                 vmin=np.log10(vmin + 1e-20),
                 vmax=np.log10(vmax + 1e-20),
             )
             axes_flat[plot_idx].set_title("Ground Truth", fontsize=11)
-            axes_flat[plot_idx].set_xlabel("kx")
-            axes_flat[plot_idx].set_ylabel("kz")
+            axes_flat[plot_idx].set_xlabel("kx (wavenumber)", fontsize=10)
+            axes_flat[plot_idx].set_ylabel("kz (wavenumber)", fontsize=10)
             plt.colorbar(im, ax=axes_flat[plot_idx], label="log10(Energy)")
             plot_idx += 1
 
@@ -208,12 +250,14 @@ class SpectrumComparator:
                     np.log10(pred_data + 1e-20),
                     cmap="viridis",
                     aspect="auto",
+                    origin="lower",
+                    extent=extent,
                     vmin=np.log10(vmin + 1e-20),
                     vmax=np.log10(vmax + 1e-20),
                 )
                 axes_flat[plot_idx].set_title(model_name, fontsize=11)
-                axes_flat[plot_idx].set_xlabel("kx")
-                axes_flat[plot_idx].set_ylabel("kz")
+                axes_flat[plot_idx].set_xlabel("kx (wavenumber)", fontsize=10)
+                axes_flat[plot_idx].set_ylabel("kz (wavenumber)", fontsize=10)
                 plt.colorbar(im, ax=axes_flat[plot_idx], label="log10(Energy)")
                 plot_idx += 1
 
@@ -267,19 +311,41 @@ class SpectrumComparator:
         fig = plt.figure(figsize=(4.5 * n_cols, 12))
         gs = fig.add_gridspec(3, n_cols, hspace=0.35, wspace=0.35)
 
-        colors = plt.cm.tab10(np.linspace(0, 1, len(self.model_names)))
+        # 使用自定义颜色：Swin Transformer 使用红色
+        colors = []
+        for model_name in self.model_names:
+            if "Swin" in model_name:
+                colors.append("red")
+            else:
+                colors.append(None)
+
+        # 为非Swin模型分配tab10颜色
+        default_colors = plt.cm.tab10(np.linspace(0, 1, len(self.model_names)))
+        for i in range(len(colors)):
+            if colors[i] is None:
+                colors[i] = default_colors[i]
 
         # ========== 第1行：1D 谱 + GT 2D ==========
         # --- 子图 (0,0): kx 谱对比 ---
         ax_kx = fig.add_subplot(gs[0, 0])
         if gt_kx is not None:
-            k = np.arange(len(gt_kx))
-            ax_kx.loglog(k, gt_kx, "k-", linewidth=2, label="Ground Truth", alpha=0.8)
+            # 计算真实的波数坐标（只取正频率）
+            N = len(gt_kx)
+            kx_full = np.fft.fftfreq(N, 1.0)
+            kx_pos_mask = kx_full > 0
+            kx_pos = kx_full[kx_pos_mask]
+            gt_kx_pos = gt_kx[kx_pos_mask]
+            ax_kx.loglog(kx_pos, gt_kx_pos, "k-", linewidth=2, label="Ground Truth", alpha=0.8)
 
         for i, (pred_kx, model_name) in enumerate(zip(pred_kx_list, self.model_names, strict=False)):
             if pred_kx is not None:
-                k = np.arange(len(pred_kx))
-                ax_kx.loglog(k, pred_kx, "--", linewidth=1.5, color=colors[i], label=model_name, alpha=0.7)
+                # 计算真实的波数坐标（只取正频率）
+                N = len(pred_kx)
+                kx_full = np.fft.fftfreq(N, 1.0)
+                kx_pos_mask = kx_full > 0
+                kx_pos = kx_full[kx_pos_mask]
+                pred_kx_pos = pred_kx[kx_pos_mask]
+                ax_kx.loglog(kx_pos, pred_kx_pos, "--", linewidth=1.5, color=colors[i], label=model_name, alpha=0.7)
 
         ax_kx.set_xlabel("Wavenumber kx", fontsize=10)
         ax_kx.set_ylabel("Energy", fontsize=10)
@@ -290,13 +356,23 @@ class SpectrumComparator:
         # --- 子图 (0,1): kz 谱对比 ---
         ax_kz = fig.add_subplot(gs[0, 1])
         if gt_kz is not None:
-            k = np.arange(len(gt_kz))
-            ax_kz.loglog(k, gt_kz, "k-", linewidth=2, label="Ground Truth", alpha=0.8)
+            # 计算真实的波数坐标（只取正频率）
+            N = len(gt_kz)
+            kz_full = np.fft.fftfreq(N, 1.0)
+            kz_pos_mask = kz_full > 0
+            kz_pos = kz_full[kz_pos_mask]
+            gt_kz_pos = gt_kz[kz_pos_mask]
+            ax_kz.loglog(kz_pos, gt_kz_pos, "k-", linewidth=2, label="Ground Truth", alpha=0.8)
 
         for i, (pred_kz, model_name) in enumerate(zip(pred_kz_list, self.model_names, strict=False)):
             if pred_kz is not None:
-                k = np.arange(len(pred_kz))
-                ax_kz.loglog(k, pred_kz, "--", linewidth=1.5, color=colors[i], label=model_name, alpha=0.7)
+                # 计算真实的波数坐标（只取正频率）
+                N = len(pred_kz)
+                kz_full = np.fft.fftfreq(N, 1.0)
+                kz_pos_mask = kz_full > 0
+                kz_pos = kz_full[kz_pos_mask]
+                pred_kz_pos = pred_kz[kz_pos_mask]
+                ax_kz.loglog(kz_pos, pred_kz_pos, "--", linewidth=1.5, color=colors[i], label=model_name, alpha=0.7)
 
         ax_kz.set_xlabel("Wavenumber kz", fontsize=10)
         ax_kz.set_ylabel("Energy", fontsize=10)
@@ -307,7 +383,15 @@ class SpectrumComparator:
         # --- 子图 (0,2): Ground Truth 2D 谱 ---
         ax_gt = fig.add_subplot(gs[0, 2])
         if gt_2d is not None:
-            im_gt = ax_gt.imshow(np.log10(gt_2d + 1e-20), cmap="viridis", aspect="auto", origin="lower")
+            # 计算2D谱的波数坐标范围
+            H, W = gt_2d.shape
+            kx_2d = np.fft.fftfreq(W, 1.0)
+            kz_2d = np.fft.fftfreq(H, 1.0)
+            extent_2d = [kx_2d.min(), kx_2d.max(), kz_2d.min(), kz_2d.max()]
+
+            im_gt = ax_gt.imshow(
+                np.log10(gt_2d + 1e-20), cmap="viridis", aspect="auto", origin="lower", extent=extent_2d
+            )
             ax_gt.set_title("Ground Truth\n2D Spectrum", fontsize=11, fontweight="bold")
             ax_gt.set_xlabel("kx", fontsize=10)
             ax_gt.set_ylabel("kz", fontsize=10)
@@ -331,7 +415,13 @@ class SpectrumComparator:
             ax_pred = fig.add_subplot(gs[1, i])
             if pred_2d is not None:
                 im_pred = ax_pred.imshow(
-                    np.log10(pred_2d + 1e-20), cmap="viridis", aspect="auto", origin="lower", vmin=vmin_2d, vmax=vmax_2d
+                    np.log10(pred_2d + 1e-20),
+                    cmap="viridis",
+                    aspect="auto",
+                    origin="lower",
+                    extent=extent_2d,
+                    vmin=vmin_2d,
+                    vmax=vmax_2d,
                 )
                 ax_pred.set_title(f"{model_name}\nPrediction", fontsize=11, fontweight="bold")
                 ax_pred.set_xlabel("kx", fontsize=10)
@@ -374,6 +464,7 @@ class SpectrumComparator:
                         cmap="hot_r",  # 反转 hot colormap: 浅色=小误差, 深色=大误差
                         aspect="auto",
                         origin="lower",
+                        extent=extent_2d,
                         vmin=vmin_err,
                         vmax=vmax_err,
                     )
