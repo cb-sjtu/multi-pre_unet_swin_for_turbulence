@@ -7,7 +7,7 @@ sequence_length: 5
 prediction_horizon: 1
 
 # LSTM architecture
-hidden_dimensions: [32, 128, 128]  # Same as 3-plane
+hidden_dimensions: [32, 32, 64, 64]  # Same as 3-plane
 kernel_sizes: [3, 3, 3]
 num_layers: 3
 bias: true
