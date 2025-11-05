@@ -375,6 +375,9 @@ class FlowSequence1PlaneDataset(Dataset):
             "num_channels": self.num_channels,
             "resolution": self.data_shape,
             "resolution_scale": self.resolution_scale,
+            # Add compatibility keys for evaluation scripts that expect multi-plane format
+            "y_slices": [self.y_slice],  # Single plane as list for compatibility
+            "num_planes": 1,  # Always 1 for single plane
         }
 
         # Channel mapping

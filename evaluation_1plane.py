@@ -230,7 +230,7 @@ class OnePlaneModelEvaluator:
         )
 
         print(f"Dataset sizes - Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
-        print(f"Channel info: {train_dataset.get_channel_info()['num_total_channels']} total channels")
+        print(f"Channel info: {train_dataset.get_channel_info()['num_channels']} total channels")
 
         return train_dataset, val_dataset, test_dataset
 
@@ -330,9 +330,9 @@ class OnePlaneModelEvaluator:
 
         # Get channel info
         channel_info = self.test_dataset.get_channel_info()
-        field_names = channel_info["field_names"]  # ["u", "v", "w", "p"]
-        y_slices = channel_info["y_slices"]  # [29, 54, 75]
-        num_planes = channel_info["num_planes"]  # 3
+        field_names = channel_info["field_names"]  # ["u", "v", "w"] for 1-plane
+        y_slices = channel_info["y_slices"]  # [54] for 1-plane
+        num_planes = channel_info["num_planes"]  # 1 for 1-plane
 
         # Create separate visualizations for each channel
         self._create_channel_visualizations(
@@ -746,12 +746,12 @@ class OnePlaneModelEvaluator:
                 # Calculate per-channel errors for first few steps
                 if i < 10:  # Print first 10 steps
                     channel_info = dataset.get_channel_info()
-                    field_names = channel_info["field_names"]  # ["u", "v", "w", "p"]
-                    # y_slices = channel_info["y_slices"]  # [29, 54, 75] (unused)
+                    field_names = channel_info["field_names"]  # ["u", "v", "w"]
+                    num_planes = channel_info["num_planes"]  # Get num_planes from channel info
 
-                    for plane_idx in range(3):
+                    for plane_idx in range(num_planes):
                         for field_idx, field_name in enumerate(field_names):
-                            channel_idx = plane_idx * 4 + field_idx
+                            channel_idx = plane_idx * len(field_names) + field_idx
 
                             pred_data = pred_denorm[channel_idx]
                             target_data = target_denorm[channel_idx]
@@ -815,15 +815,16 @@ class OnePlaneModelEvaluator:
         channel_info = dataset.get_channel_info()
         field_names = channel_info["field_names"]
         y_slices = channel_info["y_slices"]
+        num_planes = channel_info["num_planes"]  # Get num_planes from channel info
 
         num_steps = min(len(ground_truth_frames), pred_seq.shape[0], 10)
         for i in range(num_steps):
             pred_frame = pred_seq[i]
             gt_frame = ground_truth_frames[i]
 
-            for plane_idx in range(3):
+            for plane_idx in range(num_planes):
                 for field_idx, field_name in enumerate(field_names):
-                    channel_idx = plane_idx * 4 + field_idx
+                    channel_idx = plane_idx * len(field_names) + field_idx
 
                     pred_data = pred_frame[channel_idx]
                     target_data = gt_frame[channel_idx]
@@ -857,12 +858,13 @@ class OnePlaneModelEvaluator:
 
         channel_info = self.test_dataset.get_channel_info()  # Use test dataset channel info
         field_names = channel_info["field_names"]
+        num_planes = channel_info["num_planes"]
         # y_slices = channel_info["y_slices"]  # (unused)
 
         for t, (pred, target) in enumerate(zip(predictions, ground_truth_frames, strict=False)):
-            for plane_idx in range(3):
+            for plane_idx in range(num_planes):
                 for field_idx, field_name in enumerate(field_names):
-                    channel_idx = plane_idx * 4 + field_idx
+                    channel_idx = plane_idx * len(field_names) + field_idx
 
                     pred_data = pred[channel_idx]
                     target_data = target[channel_idx]
@@ -916,11 +918,12 @@ class OnePlaneModelEvaluator:
         channel_info = self.test_dataset.get_channel_info()
         field_names = channel_info["field_names"]
         y_slices = channel_info["y_slices"]
+        num_planes = channel_info["num_planes"]
 
-        for plane_idx in range(3):
+        for plane_idx in range(num_planes):
             for field_idx, field_name in enumerate(field_names):
                 ax = axes[plane_idx, field_idx]
-                channel_idx = plane_idx * 4 + field_idx
+                channel_idx = plane_idx * len(field_names) + field_idx
 
                 # Create side-by-side comparison: prediction | ground truth
                 pred_field = pred[channel_idx]
@@ -973,12 +976,13 @@ class OnePlaneModelEvaluator:
         }
 
         num_timesteps = min(len(ground_truth_frames), pred_seq.shape[0])
+        num_planes = len(y_slices)
 
         for t in range(num_timesteps):
             pred_frame = pred_seq[t]  # (C, H, W)
             gt_frame = ground_truth_frames[t]  # (C, H, W)
 
-            for plane_idx in range(3):
+            for plane_idx in range(num_planes):
                 for field_idx, field_name in enumerate(field_names):
                     channel_idx = plane_idx * len(field_names) + field_idx
                     y_slice = y_slices[plane_idx]
@@ -1048,7 +1052,7 @@ class OnePlaneModelEvaluator:
 
             # Per-plane statistics
             f.write("Per-Plane Statistics:\n")
-            for plane_idx in range(3):
+            for plane_idx in range(num_planes):
                 y_slice = y_slices[plane_idx]
                 plane_data = df[df["plane"] == plane_idx]
                 if not plane_data.empty:
@@ -1100,12 +1104,13 @@ class OnePlaneModelEvaluator:
         channel_info = self.test_dataset.get_channel_info()
         field_names = channel_info["field_names"]
         y_slices = channel_info["y_slices"]
+        num_planes = len(y_slices)
 
         # Limit display steps
         display_steps = min(len(predictions), 15)
 
         # Create one visualization per channel
-        for plane_idx in range(3):
+        for plane_idx in range(num_planes):
             y_slice = y_slices[plane_idx]
 
             for field_idx, field_name in enumerate(field_names):
@@ -1190,12 +1195,13 @@ class OnePlaneModelEvaluator:
         channel_info = self.test_dataset.get_channel_info()
         field_names = channel_info["field_names"]
         y_slices = channel_info["y_slices"]
+        num_planes = len(y_slices)
 
         # Limit display steps
         display_steps = min(len(ground_truth_frames), pred_seq.shape[0], 15)
 
         # Create one visualization per channel
-        for plane_idx in range(3):
+        for plane_idx in range(num_planes):
             y_slice = y_slices[plane_idx]
 
             for field_idx, field_name in enumerate(field_names):
@@ -1296,6 +1302,7 @@ class OnePlaneModelEvaluator:
 
         T, _C, H, W = frames.shape
         spectra_results = {}
+        num_planes = len(y_slices)  # Number of planes from y_slices
 
         # Compute frequency grids (no fftshift here, only in visualization)
         kx = np.fft.fftfreq(W, dx)  # x-direction wavenumbers
@@ -1305,7 +1312,7 @@ class OnePlaneModelEvaluator:
         kx_pos = kx[kx > 0]
         kz_pos = kz[kz > 0]
 
-        for plane_idx in range(3):
+        for plane_idx in range(num_planes):
             y_slice = y_slices[plane_idx]
             spectra_results[f"plane{plane_idx}"] = {"y_slice": y_slice, "fields": {}}
 
@@ -1313,7 +1320,7 @@ class OnePlaneModelEvaluator:
                 print(f"  Processing plane {plane_idx} ({field_name}) at y={y_slice}")
 
                 # Extract channel data for this plane and field
-                channel_idx = plane_idx * 4 + field_idx
+                channel_idx = plane_idx * len(field_names) + field_idx
                 field_data = frames[:, channel_idx, :, :]  # Shape: (T, H, W)
 
                 # Time-averaged energy spectrum
@@ -1365,8 +1372,9 @@ class OnePlaneModelEvaluator:
             mode: String identifier for the plot type ("prediction" or "ground_truth")
         """
         print(f"Plotting energy spectra for {mode}...")
+        num_planes = len(y_slices)
 
-        for plane_idx in range(3):
+        for plane_idx in range(num_planes):
             y_slice = y_slices[plane_idx]
             plane_data = spectra[f"plane{plane_idx}"]
 
@@ -1532,8 +1540,9 @@ class OnePlaneModelEvaluator:
             y_slices: List of y-slice positions
         """
         print("Creating combined spectra comparison plots...")
+        num_planes = len(y_slices)
 
-        for plane_idx in range(3):
+        for plane_idx in range(num_planes):
             y_slice = y_slices[plane_idx]
 
             for field_name in field_names:
@@ -1643,7 +1652,7 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate 1-plane Flow Swin Transformer")
     parser.add_argument("--checkpoint_path", type=str, help="Path to model checkpoint")
     parser.add_argument("--num_samples", type=int, default=1, help="Number of samples to evaluate")
-    parser.add_argument("--num_future", type=int, default=50, help="Number of future steps to predict")
+    parser.add_argument("--num_future", type=int, default=80, help="Number of future steps to predict")
     parser.add_argument("--save_predictions", action="store_true", help="Save predictions as H5 files")
 
     args = parser.parse_args()
@@ -1655,7 +1664,7 @@ def main():
         # Default to the hardcoded path if no argument provided
         checkpoint_path = (
             "/home/sh/CB/icon-thewell-dev/logs/flow_fno_1plane/"
-            "runs/2025-10-27_22-56-39-791052/checkpoints/step_27000.ckpt"
+            "runs/2025-11-05_15-18-05-369060/checkpoints/step_1800.ckpt"
         )
 
     # Load model config from checkpoint
