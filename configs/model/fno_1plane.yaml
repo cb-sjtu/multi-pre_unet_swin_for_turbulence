@@ -1,0 +1,12 @@
+_target_: src.models.nop.fno_2d_temporal.FNO2DTemporalModel
+
+input_shape: [256, 256]  # 2D shape (z, x) - full 256×256 resolution
+sequence_length: 5
+prediction_horizon: 1
+num_channels: 3  # 1 plane × 3 fields (u,v,w) = 3 channels
+hidden_channels: 64  # Hidden dimension for FNO layers
+num_layers: 4  # Number of FNO layers
+num_modes: [32, 32]  # Number of Fourier modes to keep in [height, width] - 1/8 ratio for 256×256
+lifting_channels: 128  # Channels for lifting operation
+projection_channels: 128  # Channels for projection operation
+use_mlp: false  # No MLP layers (pure spectral convolution)

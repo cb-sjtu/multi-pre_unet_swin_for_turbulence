@@ -1,0 +1,18 @@
+#######################################################
+# Configuration for 1-plane (yslice54) flow sequence dataset
+# 3 channels (u, v, w) at 256×256 resolution
+#######################################################
+
+defaults:
+  - ../dataloader@_here_
+  - train/flow_1plane_train@train.flow_sequence_1plane
+  - valid/flow_1plane_valid@valid.flow_sequence_1plane
+  - test/flow_1plane_test@test.flow_sequence_1plane
+  - _self_
+
+data_folder: /home/sh/CB/icon-thewell-dev/data/preprocessed_flow/
+batch_size_per_device: 10  # Can increase since only 3 channels (vs 12 for 3-plane)
+
+# Normalization settings
+enable_normalization: true
+norm_stats: "norm_stats_3ch_1plane_u-v-w_scale2-3-1_yslice54.json"  # 3-channel normalization stats
