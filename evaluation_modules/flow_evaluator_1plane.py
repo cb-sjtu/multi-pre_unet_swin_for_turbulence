@@ -243,6 +243,23 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
             ground_truth_frames = [target_seq[i] for i in range(available_gt_steps)]
             print(f"  Available ground truth steps: {available_gt_steps}")
 
+            # Debug: print first GT frame info
+            if ground_truth_frames:
+                # Get first GT frame and denormalize it
+                first_gt_normalized = ground_truth_frames[0]  # (C, H, W)
+                first_gt_denorm = dataset.denormalize(first_gt_normalized.unsqueeze(0))[0].cpu()  # (C, H, W)
+
+                # Calculate the actual timestep for first GT
+                base_idx = dataset.indices[sample_idx]
+                # First GT corresponds to: base_idx + input_length * time_stride
+                first_gt_timestep_idx = base_idx + dataset.input_length * dataset.time_stride
+                first_gt_timestep = dataset.timesteps[first_gt_timestep_idx]
+
+                print(f"  [DEBUG] Sample idx: {sample_idx}")
+                print(f"  [DEBUG] First GT timestep: {first_gt_timestep}")
+                print(f"  [DEBUG] First GT value at point (64,64), channel 0: {first_gt_denorm[0, 64, 64]:.6f}")
+                print(f"  [DEBUG] GT shape: {first_gt_denorm.shape}")
+
         print(f"  Input sequence shape: {input_seq.shape}")
         print(f"  Predicting {num_future} future steps...")
 
