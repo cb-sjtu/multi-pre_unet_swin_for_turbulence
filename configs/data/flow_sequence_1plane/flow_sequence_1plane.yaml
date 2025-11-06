@@ -11,7 +11,7 @@ defaults:
   - _self_
 
 data_folder: /home/sh/CB/icon-thewell-dev/data/preprocessed_flow/
-batch_size_per_device: 10  # Can increase since only 3 channels (vs 12 for 3-plane)
+batch_size_per_device: 18  # Can increase since only 3 channels (vs 12 for 3-plane)
 
 # Normalization settings
 enable_normalization: true
