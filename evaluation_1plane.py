@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Evaluation script for 1-plane 3-channel Flow Swin Transformer implementation.
-Loads the best model checkpoint and generates comprehensive visualizations for all planes and channels.
+Loads the best model checkpoint and generates comprehensive visualizations for single plane.
+Only processes u,v,w velocity fields (pressure channel removed).
 """
 
 import os
@@ -36,7 +37,7 @@ from src.datasets.flow_sequence_2d.flow_sequence_1plane import FlowSequence1Plan
 
 
 class OnePlaneModelEvaluator:
-    """Evaluator for the 1-plane 3-channel Flow Swin Transformer model."""
+    """Evaluator for the 1-plane 3-channel Flow Swin Transformer model (u,v,w only)."""
 
     def __init__(self, checkpoint_path: str, model_cfg: DictConfig, save_predictions: bool = False):
         """Initialize the evaluator.
@@ -59,27 +60,24 @@ class OnePlaneModelEvaluator:
             log_dir_name = self._extract_log_dir_name()
             training_run_id = self._extract_wandb_run_id()
 
-            # Detect W&B project name from checkpoint path
-            wandb_project = self._detect_wandb_project()
-
             if training_run_id:
                 print(f"Found training run ID: {training_run_id}")
                 try:
                     # Try to resume the training run
                     self.wandb_run = wandb.init(
-                        project=wandb_project,
+                        project="turbulence_swin_1plane",
                         id=training_run_id,
                         resume="allow",
-                        tags=["evaluation", "flow", "1plane", "3channel"],
+                        tags=["evaluation", "flow", "swin", "1plane", "3channel", "uvw", "yslice54"],
                     )
                     print("Successfully resumed training wandb run for evaluation logging")
                 except Exception as e:
                     print(f"Could not resume training run: {e}")
                     # Fallback: create a new linked run
                     self.wandb_run = wandb.init(
-                        project=wandb_project,
+                        project="turbulence_swin_1plane",
                         name=f"evaluation_{log_dir_name}",
-                        tags=["evaluation", "flow", "1plane", "3channel"],
+                        tags=["evaluation", "flow", "swin", "1plane", "3channel", "uvw", "yslice54"],
                         config={
                             "checkpoint_path": checkpoint_path,
                             "device": str(self.device),
@@ -92,9 +90,9 @@ class OnePlaneModelEvaluator:
                 print("No training wandb run ID found, creating new evaluation run...")
                 # Create new evaluation run
                 self.wandb_run = wandb.init(
-                    project=wandb_project,
+                    project="turbulence_swin_1plane",
                     name=f"evaluation_{log_dir_name}",
-                    tags=["evaluation", "flow", "1plane", "3channel"],
+                    tags=["evaluation", "flow", "swin", "1plane", "3channel", "uvw", "yslice54"],
                     config={
                         "checkpoint_path": checkpoint_path,
                         "device": str(self.device),
@@ -123,16 +121,18 @@ class OnePlaneModelEvaluator:
         # Load checkpoint
         checkpoint = torch.load(self.checkpoint_path, map_location="cpu", weights_only=False)
 
-        # Clean up state_dict to remove metadata keys added by external libraries (e.g., neuralop)
-        # These keys like "_metadata" can cause issues when loading with strict=True
-        if "state_dict" in checkpoint:
-            state_dict = checkpoint["state_dict"]
-            # Remove all keys starting with "_" (metadata keys)
-            cleaned_state_dict = {k: v for k, v in state_dict.items() if not k.startswith("_")}
-            if len(cleaned_state_dict) < len(state_dict):
-                removed_keys = [k for k in state_dict if k.startswith("_")]
-                print(f"Removed {len(removed_keys)} metadata key(s) from state_dict: {removed_keys}")
-            checkpoint["state_dict"] = cleaned_state_dict
+        # Remove _metadata key if present (PyTorch internal key)
+        if "state_dict" in checkpoint and "_metadata" in checkpoint["state_dict"]:
+            print("Removing '_metadata' key from state_dict")
+            checkpoint["state_dict"] = {k: v for k, v in checkpoint["state_dict"].items() if k != "_metadata"}
+            # Save the cleaned checkpoint temporarily
+            import tempfile
+
+            with tempfile.NamedTemporaryFile(suffix=".ckpt", delete=False) as tmp_file:
+                temp_checkpoint_path = tmp_file.name
+                torch.save(checkpoint, temp_checkpoint_path)
+        else:
+            temp_checkpoint_path = self.checkpoint_path
 
         # Load the full Lightning module
         print("Loading full Lightning module from checkpoint...")
@@ -140,20 +140,7 @@ class OnePlaneModelEvaluator:
 
         if "hyper_parameters" in checkpoint:
             # Create the Lightning module with the same config
-            # Use strict=False to be more tolerant of minor key mismatches
-            try:
-                model = FlowSwin2DLitModule.load_from_checkpoint(self.checkpoint_path, map_location="cpu", strict=False)
-                print("Model loaded successfully using load_from_checkpoint")
-            except Exception as e:
-                print(f"Warning: load_from_checkpoint failed: {e}")
-                print("Attempting manual loading as fallback...")
-                # Fallback to manual loading
-                from omegaconf import OmegaConf
-
-                cfg = checkpoint["hyper_parameters"]["cfg"]
-                model = FlowSwin2DLitModule(cfg)
-                model.load_state_dict(checkpoint["state_dict"], strict=False)
-                print("Model weights loaded successfully via fallback!")
+            model = FlowSwin2DLitModule.load_from_checkpoint(temp_checkpoint_path, map_location="cpu")
         else:
             # Fallback: create module with current config
             print("No hyperparameters found, using current config...")
@@ -163,9 +150,15 @@ class OnePlaneModelEvaluator:
             model = FlowSwin2DLitModule(module_cfg)
 
             if "state_dict" in checkpoint:
-                # Use strict=False to allow minor mismatches
-                model.load_state_dict(checkpoint["state_dict"], strict=False)
+                state_dict = checkpoint["state_dict"]
+                model.load_state_dict(state_dict)
                 print("Model weights loaded successfully!")
+
+        # Clean up temp file if we created one
+        if temp_checkpoint_path != self.checkpoint_path:
+            import os
+
+            os.unlink(temp_checkpoint_path)
 
         model.eval()
         model.to(self.device)
@@ -177,10 +170,10 @@ class OnePlaneModelEvaluator:
 
         # Dataset configuration matching training
         data_dir = "/home/sh/CB/icon-thewell-dev/data/preprocessed_flow"
-        field_names = ["u", "v", "w"]  # Only 3 channels for 1-plane
-        file_pattern = "*u-v-w_scale2-3-1_yslice54_*.h5"
+        field_names = ["u", "v", "w"]  # Only velocity fields (removed pressure)
+        file_pattern = "*u-v-w_scale2-3-1_yslice54*.h5"
         resolution_scale = (2, 3, 1)
-        y_slice = 54  # Single y-plane
+        y_slice = 54  # y_slice54
         norm_stats_file = "norm_stats_3ch_1plane_u-v-w_scale2-3-1_yslice54.json"
 
         # Create datasets for all splits
@@ -191,9 +184,9 @@ class OnePlaneModelEvaluator:
             file_pattern=file_pattern,
             resolution_scale=resolution_scale,
             y_slice=y_slice,
-            train_ratio=0.9,
-            valid_ratio=0.05,
-            test_ratio=0.05,
+            train_ratio=0.7,
+            valid_ratio=0.15,
+            test_ratio=0.15,
             split="train",
             enable_normalization=True,
             norm_stats=norm_stats_file,
@@ -206,9 +199,9 @@ class OnePlaneModelEvaluator:
             file_pattern=file_pattern,
             resolution_scale=resolution_scale,
             y_slice=y_slice,
-            train_ratio=0.9,
-            valid_ratio=0.05,
-            test_ratio=0.05,
+            train_ratio=0.7,
+            valid_ratio=0.15,
+            test_ratio=0.15,
             split="val",
             enable_normalization=True,
             norm_stats=norm_stats_file,
@@ -221,9 +214,9 @@ class OnePlaneModelEvaluator:
             file_pattern=file_pattern,
             resolution_scale=resolution_scale,
             y_slice=y_slice,
-            train_ratio=0.9,
-            valid_ratio=0.05,
-            test_ratio=0.05,
+            train_ratio=0.7,
+            valid_ratio=0.15,
+            test_ratio=0.15,
             split="test",
             enable_normalization=True,
             norm_stats=norm_stats_file,
@@ -239,19 +232,6 @@ class OnePlaneModelEvaluator:
         checkpoint_path = Path(self.checkpoint_path)
         run_dir = checkpoint_path.parent.parent.name
         return run_dir
-
-    def _detect_wandb_project(self) -> str:
-        """Detect W&B project name from checkpoint path."""
-        checkpoint_path_str = str(self.checkpoint_path)
-
-        # Detect based on path patterns
-        if "flow_lstm_1plane" in checkpoint_path_str:
-            return "turbulence_lstm_1plane"
-        elif "flow_swin_1plane" in checkpoint_path_str:
-            return "turbulence_swin_1plane"
-        else:
-            # Default fallback
-            return "turbulence_1plane_evaluation"
 
     def _extract_wandb_run_id(self) -> str:
         """Extract wandb run ID from the training logs."""
@@ -295,13 +275,12 @@ class OnePlaneModelEvaluator:
         return pred_seq
 
     def visualize_1plane_prediction(self, sample_idx: int = 0, num_future: int = 20):
-        """Visualize 1-plane 3-channel prediction with comprehensive comparison."""
+        """Visualize 1-plane 3-channel prediction with comprehensive comparison (u,v,w only)."""
         print(f"Visualizing 1-plane sample {sample_idx} with {num_future} future steps...")
 
         # Get sample and generate predictions
         sample = self.test_dataset[sample_idx]
         input_seq = sample["data"]["input_seq"].to(self.device)
-        # target_seq = sample["label"]  # Ground truth targets (unused)
 
         # Generate predictions
         pred_seq = self.generate_sequence_prediction(input_seq, num_future)
@@ -325,234 +304,441 @@ class OnePlaneModelEvaluator:
         pred_seq_denorm = self.test_dataset.denormalize(pred_seq)
 
         # Move to CPU
-        input_seq = input_seq_denorm.cpu().numpy()[0]  # (T, C, H, W)
-        pred_seq = pred_seq_denorm.cpu().numpy()[0]  # (T_pred, C, H, W)
+        input_seq_np = input_seq_denorm.cpu().numpy()[0]  # (T, C, H, W)
+        pred_seq_np = pred_seq_denorm.cpu().numpy()[0]  # (T_pred, C, H, W)
 
         # Get channel info
         channel_info = self.test_dataset.get_channel_info()
-        field_names = channel_info["field_names"]  # ["u", "v", "w"] for 1-plane
-        y_slices = channel_info["y_slices"]  # [54] for 1-plane
-        num_planes = channel_info["num_planes"]  # 1 for 1-plane
+        field_names = channel_info["field_names"]  # ["u", "v", "w"]
+        y_slice = channel_info["y_slice"]  # 54
 
-        # Create separate visualizations for each channel
+        # Create visualizations for each channel (3 total: u, v, w)
         self._create_channel_visualizations(
-            input_seq, pred_seq, ground_truth_frames, field_names, y_slices, num_planes, sample_idx, num_future
+            input_seq_np, pred_seq_np, ground_truth_frames, field_names, y_slice, sample_idx, num_future
         )
 
-        # Create comprehensive comparison visualization
-        self._create_comprehensive_comparison(
-            input_seq, pred_seq, ground_truth_frames, field_names, y_slices, num_planes, sample_idx, num_future
-        )
-
-        # Save detailed error analysis
-        self._save_detailed_error_analysis(pred_seq, ground_truth_frames, sample_idx, field_names, y_slices)
+        print(f"Visualization complete for sample {sample_idx}")
 
     def _create_channel_visualizations(
-        self, input_seq, pred_seq, ground_truth_frames, field_names, y_slices, num_planes, sample_idx, num_future
+        self, input_seq, pred_seq, ground_truth_frames, field_names, y_slice, sample_idx, num_future
     ):
         """Create separate visualization for each channel with 20 steps."""
         display_steps = min(num_future, 20)
 
-        for plane_idx in range(num_planes):
-            y_slice = y_slices[plane_idx]
+        for field_idx, field_name in enumerate(field_names):
+            channel_idx = field_idx
 
-            for field_idx, field_name in enumerate(field_names):
-                channel_idx = plane_idx * len(field_names) + field_idx
+            # Create figure for this channel: 3 rows (GT, Pred, Error) × timesteps
+            fig, axes = plt.subplots(3, display_steps, figsize=(2 * display_steps, 8))
+            if display_steps == 1:
+                axes = axes.reshape(3, 1)
 
-                # Create figure for this channel: 3 rows (GT, Pred, Error) × timesteps
-                fig, axes = plt.subplots(3, display_steps, figsize=(2 * display_steps, 8))
-                if display_steps == 1:
-                    axes = axes.reshape(3, 1)
+            print(f"\nChannel: {field_name.upper()} (y={y_slice})")
+            print("Step | MSE      | MAE      | RMS-Rel Error")
+            print("-" * 40)
 
-                print(f"\nChannel: Plane{plane_idx} {field_name.upper()} (y={y_slice})")
-                print("Step | MSE      | MAE      | RMS-Rel Error")
-                print("-" * 40)
+            # Calculate channel-specific colorbar range across all timesteps
+            all_data = []
+            for t in range(display_steps):
+                if t < len(ground_truth_frames):
+                    all_data.append(ground_truth_frames[t][channel_idx])
+                if t < pred_seq.shape[0]:
+                    all_data.append(pred_seq[t][channel_idx])
 
-                # Calculate channel-specific colorbar range across all timesteps
-                all_data = []
-                for t in range(display_steps):
-                    if t < len(ground_truth_frames):
-                        all_data.append(ground_truth_frames[t][channel_idx])
-                    if t < pred_seq.shape[0]:
-                        all_data.append(pred_seq[t][channel_idx])
+            if all_data:
+                # All fields are velocity components
+                cmap = "RdBu_r"
+                vmax = max([abs(data.min()) for data in all_data] + [abs(data.max()) for data in all_data])
+                vmin = -vmax
+            else:
+                cmap = "RdBu_r"
+                vmin, vmax = -1, 1
 
-                if all_data:
-                    if field_name in ["u", "v", "w"]:  # Velocity components
-                        cmap = "RdBu_r"
-                        vmax = max([abs(data.min()) for data in all_data] + [abs(data.max()) for data in all_data])
-                        vmin = -vmax
-                    else:  # Pressure
-                        cmap = "viridis"
-                        vmin = min([data.min() for data in all_data])
-                        vmax = max([data.max() for data in all_data])
+            for t in range(display_steps):
+                # Ground truth
+                if t < len(ground_truth_frames):
+                    gt_data = ground_truth_frames[t][channel_idx]
+                    im1 = axes[0, t].imshow(gt_data, cmap=cmap, vmin=vmin, vmax=vmax, origin="lower")
+                    axes[0, t].set_title(f"GT t+{t + 1}", fontsize=8)
                 else:
-                    cmap = "viridis"
-                    vmin, vmax = 0, 1
+                    axes[0, t].axis("off")
+                    axes[0, t].set_title("GT N/A", fontsize=8)
 
-                for t in range(display_steps):
-                    # Ground truth
+                # Prediction
+                if t < pred_seq.shape[0]:
+                    pred_data = pred_seq[t][channel_idx]
+                    im2 = axes[1, t].imshow(pred_data, cmap=cmap, vmin=vmin, vmax=vmax, origin="lower")
+                    axes[1, t].set_title(f"Pred t+{t + 1}", fontsize=8)
+
+                    # Error
                     if t < len(ground_truth_frames):
                         gt_data = ground_truth_frames[t][channel_idx]
-                        im1 = axes[0, t].imshow(gt_data, cmap=cmap, vmin=vmin, vmax=vmax, origin="lower")
-                        axes[0, t].set_title(f"GT t+{t + 1}", fontsize=8)
+                        error = np.abs(pred_data - gt_data)
+                        im3 = axes[2, t].imshow(error, cmap="Reds", origin="lower")
+
+                        # Calculate metrics
+                        mse = np.mean((pred_data - gt_data) ** 2)
+                        mae = np.mean(error)
+                        target_rms = np.sqrt(np.mean(gt_data**2))
+                        rms_rel_error = np.sqrt(mse) / (target_rms + 1e-8)
+
+                        print(f"t+{t + 1:2d} | {mse:.6f} | {mae:.6f} | {rms_rel_error:.6f}")
+                        axes[2, t].set_title(f"Error t+{t + 1}\nMAE: {mae:.4f}", fontsize=8)
                     else:
-                        axes[0, t].axis("off")
-                        axes[0, t].set_title("GT N/A", fontsize=8)
-
-                    # Prediction
-                    if t < pred_seq.shape[0]:
-                        pred_data = pred_seq[t][channel_idx]
-                        im2 = axes[1, t].imshow(pred_data, cmap=cmap, vmin=vmin, vmax=vmax, origin="lower")
-                        axes[1, t].set_title(f"Pred t+{t + 1}", fontsize=8)
-
-                        # Error
-                        if t < len(ground_truth_frames):
-                            gt_data = ground_truth_frames[t][channel_idx]
-                            error = np.abs(pred_data - gt_data)
-                            im3 = axes[2, t].imshow(error, cmap="Reds", origin="lower")
-
-                            # Calculate metrics
-                            mse = np.mean((pred_data - gt_data) ** 2)
-                            mae = np.mean(error)
-                            target_rms = np.sqrt(np.mean(gt_data**2))
-                            rms_rel_error = np.sqrt(mse) / (target_rms + 1e-8)
-
-                            print(f"t+{t + 1:2d} | {mse:.6f} | {mae:.6f} | {rms_rel_error:.6f}")
-                            axes[2, t].set_title(f"Error t+{t + 1}\nMAE: {mae:.4f}", fontsize=8)
-                        else:
-                            axes[2, t].axis("off")
-                            axes[2, t].set_title("Error N/A", fontsize=8)
-                    else:
-                        axes[1, t].axis("off")
-                        axes[1, t].set_title("Pred N/A", fontsize=8)
                         axes[2, t].axis("off")
                         axes[2, t].set_title("Error N/A", fontsize=8)
+                else:
+                    axes[1, t].axis("off")
+                    axes[1, t].set_title("Pred N/A", fontsize=8)
+                    axes[2, t].axis("off")
+                    axes[2, t].set_title("Error N/A", fontsize=8)
 
-                    # Remove axis ticks for cleaner look
-                    for row in range(3):
-                        axes[row, t].set_xticks([])
-                        axes[row, t].set_yticks([])
+                # Remove axis ticks for cleaner look
+                for row in range(3):
+                    axes[row, t].set_xticks([])
+                    axes[row, t].set_yticks([])
 
-                    # Add colorbar for first column
-                    if t == 0:
-                        if t < len(ground_truth_frames):
-                            plt.colorbar(im1, ax=axes[0, t], fraction=0.046, pad=0.04)
-                        if t < pred_seq.shape[0]:
-                            plt.colorbar(im2, ax=axes[1, t], fraction=0.046, pad=0.04)
-                            if t < len(ground_truth_frames):
-                                plt.colorbar(im3, ax=axes[2, t], fraction=0.046, pad=0.04)
-
-                # Set row labels
-                axes[0, 0].set_ylabel("Ground Truth", fontsize=10)
-                axes[1, 0].set_ylabel("Prediction", fontsize=10)
-                axes[2, 0].set_ylabel("Error", fontsize=10)
-
-                plt.suptitle(f"Plane {plane_idx} - {field_name.upper()} (y={y_slice}) - 20 Steps", fontsize=12)
-                plt.tight_layout()
-
-                # Save individual channel visualization
-                output_path = self.output_dir / f"channel_plane{plane_idx}_{field_name}_sample_{sample_idx}.png"
-                plt.savefig(output_path, dpi=300, bbox_inches="tight")
-                print(f"Saved channel visualization: {output_path}")
-
-                # Log to wandb if available
-                if self.wandb_run:
-                    self.wandb_run.log(
-                        {f"channel_plane{plane_idx}_{field_name}_sample_{sample_idx}": wandb.Image(str(output_path))}
-                    )
-
-                plt.close()  # Close to save memory
-
-    def _create_comprehensive_comparison(
-        self, input_seq, pred_seq, ground_truth_frames, field_names, y_slices, num_planes, sample_idx, num_future
-    ):
-        """Create comprehensive comparison visualization showing all channels and planes."""
-        # Limit display for overview
-        display_steps = min(num_future, 10)
-
-        # Create comprehensive visualization
-        # Rows: 3 planes × 4 fields = 12 rows
-        # Cols: timesteps
-        fig, axes = plt.subplots(
-            num_planes * len(field_names),
-            display_steps,
-            figsize=(2.5 * display_steps, 1.8 * num_planes * len(field_names)),
-        )
-
-        if display_steps == 1:
-            axes = axes.reshape(-1, 1)
-
-        for t in range(display_steps):
-            for plane_idx in range(num_planes):
-                y_slice = y_slices[plane_idx]
-
-                for field_idx, field_name in enumerate(field_names):
-                    row_idx = plane_idx * len(field_names) + field_idx
-                    channel_idx = plane_idx * len(field_names) + field_idx
-
-                    ax = axes[row_idx, t]
-
+                # Add colorbar for first column
+                if t == 0:
+                    if t < len(ground_truth_frames):
+                        plt.colorbar(im1, ax=axes[0, t], fraction=0.046, pad=0.04)
                     if t < pred_seq.shape[0]:
-                        # Show predictions
-                        data = pred_seq[t][channel_idx]  # (H, W)
-                        title_suffix = f"Pred t+{t + 1}"
-                    else:
-                        # Show black if no prediction
-                        data = np.zeros((pred_seq.shape[-2], pred_seq.shape[-1]))
-                        title_suffix = "N/A"
+                        plt.colorbar(im2, ax=axes[1, t], fraction=0.046, pad=0.04)
+                        if t < len(ground_truth_frames):
+                            plt.colorbar(im3, ax=axes[2, t], fraction=0.046, pad=0.04)
 
-                    # Determine colormap and range based on field
-                    if field_name in ["u", "v", "w"]:  # Velocity components
-                        cmap = "RdBu_r"
-                        if np.any(data):
-                            vmax = max(abs(data.min()), abs(data.max()))
-                            vmin = -vmax
-                        else:
-                            vmin, vmax = -1, 1
-                    else:  # Pressure
-                        cmap = "viridis"
-                        if np.any(data):
-                            vmin, vmax = data.min(), data.max()
-                        else:
-                            vmin, vmax = 0, 1
+            # Set row labels
+            axes[0, 0].set_ylabel("Ground Truth", fontsize=10)
+            axes[1, 0].set_ylabel("Prediction", fontsize=10)
+            axes[2, 0].set_ylabel("Error", fontsize=10)
 
-                    im = ax.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax, origin="lower")
+            plt.suptitle(f"{field_name.upper()} (y={y_slice}) - 20 Steps", fontsize=12)
+            plt.tight_layout()
 
-                    # Set title
-                    if t == 0:
-                        ax.set_title(f"{title_suffix}\nP{plane_idx} {field_name} y={y_slice}", fontsize=6)
-                    else:
-                        ax.set_title(f"{title_suffix}", fontsize=6)
+            # Save individual channel visualization
+            output_path = self.output_dir / f"channel_{field_name}_sample_{sample_idx}.png"
+            plt.savefig(output_path, dpi=300, bbox_inches="tight")
+            print(f"Saved channel visualization: {output_path}")
 
-                    ax.set_xticks([])
-                    ax.set_yticks([])
+            # Log to wandb if available
+            if self.wandb_run:
+                self.wandb_run.log({f"channel_{field_name}_sample_{sample_idx}": wandb.Image(str(output_path))})
 
-                    # Add colorbar for first column
-                    if t == 0 and np.any(data):
-                        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            plt.close()  # Close to save memory
 
-        plt.suptitle(f"1-Plane 3-Channel Prediction Overview (yslice54) - Sample {sample_idx}", fontsize=14)
-        plt.tight_layout()
+    def _compute_energy_spectra(self, frames, field_names, y_slice, dx=1.0, dz=1.0):
+        """
+        Compute energy spectra from prediction frames for 1 plane.
 
-        # Save comprehensive figure
-        output_path = self.output_dir / f"1plane_comprehensive_sample_{sample_idx}.png"
-        plt.savefig(output_path, dpi=300, bbox_inches="tight")
-        print(f"Saved comprehensive visualization: {output_path}")
+        Args:
+            frames: Tensor of shape (T, C, H, W) where C = 3 (u, v, w)
+            field_names: List of field names ["u", "v", "w"]
+            y_slice: Y-slice position (54)
+            dx: Grid spacing in x direction
+            dz: Grid spacing in z direction
 
-        # Log to wandb if available
-        if self.wandb_run:
-            self.wandb_run.log(
-                {
-                    f"1plane_comprehensive_sample_{sample_idx}": wandb.Image(str(output_path)),
-                    "sample_idx": sample_idx,
-                    "num_future_steps": num_future,
-                }
+        Returns:
+            dict: Dictionary containing spectra data for each field
+        """
+        print("Computing energy spectra...")
+
+        if isinstance(frames, torch.Tensor):
+            frames = frames.detach().cpu().numpy()
+
+        T, _C, H, W = frames.shape
+        spectra_results = {"y_slice": y_slice, "fields": {}}
+
+        # Compute frequency grids
+        kx = np.fft.fftfreq(W, dx)  # x-direction wavenumbers
+        kz = np.fft.fftfreq(H, dz)  # z-direction wavenumbers
+
+        # Only keep positive frequencies for plotting
+        kx_pos = kx[kx > 0]
+        kz_pos = kz[kz > 0]
+
+        for field_idx, field_name in enumerate(field_names):
+            print(f"  Processing {field_name} at y={y_slice}")
+
+            # Extract channel data for this field
+            field_data = frames[:, field_idx, :, :]  # Shape: (T, H, W)
+
+            # Time-averaged energy spectrum
+            spectrum_2d_sum = np.zeros((H, W))
+
+            for t in range(T):
+                # Remove mean before FFT
+                data_slice = field_data[t] - np.mean(field_data[t])
+
+                # Compute 2D FFT with normalization
+                fft_2d = np.fft.fft2(data_slice) / (H * W)
+
+                # Compute energy spectrum: E(kx, kz) = 0.5 * |q_hat|^2
+                spectrum_2d = 0.5 * np.abs(fft_2d) ** 2
+                spectrum_2d_sum += spectrum_2d
+
+            # Time average
+            spectrum_2d_avg = spectrum_2d_sum / T
+
+            # Compute 1D spectra by integration
+            spectrum_kx = np.sum(spectrum_2d_avg, axis=0)  # Sum over kz
+            spectrum_kz = np.sum(spectrum_2d_avg, axis=1)  # Sum over kx
+
+            # Store results
+            spectra_results["fields"][field_name] = {
+                "spectrum_2d": spectrum_2d_avg,
+                "spectrum_kx": spectrum_kx,
+                "spectrum_kz": spectrum_kz,
+                "kx": kx,
+                "kz": kz,
+                "kx_pos": kx_pos,
+                "kz_pos": kz_pos,
+            }
+
+        print("Energy spectra computation completed.")
+        return spectra_results
+
+    def _plot_energy_spectra(self, spectra, field_names, y_slice, mode="prediction"):
+        """
+        Plot and save energy spectra for 1 plane.
+
+        Args:
+            spectra: Dictionary containing spectra data from _compute_energy_spectra
+            field_names: List of field names
+            y_slice: Y-slice position
+            mode: String identifier for the plot type ("prediction" or "ground_truth")
+        """
+        print(f"Plotting energy spectra for {mode}...")
+
+        for field_name in field_names:
+            field_data = spectra["fields"][field_name]
+
+            # Extract data
+            spectrum_2d = field_data["spectrum_2d"]
+            spectrum_kx = field_data["spectrum_kx"]
+            spectrum_kz = field_data["spectrum_kz"]
+            kx = field_data["kx"]
+            kz = field_data["kz"]
+            kx_pos = field_data["kx_pos"]
+            kz_pos = field_data["kz_pos"]
+
+            # Save numerical data
+            base_name = f"spectrum_{mode}_{field_name}_y{y_slice}"
+            np.save(self.output_dir / f"{base_name}_2d.npy", spectrum_2d)
+            np.save(self.output_dir / f"{base_name}_kx.npy", spectrum_kx)
+            np.save(self.output_dir / f"{base_name}_kz.npy", spectrum_kz)
+
+            # Create combined figure with all spectrum visualizations
+            fig = plt.figure(figsize=(18, 6))
+
+            # Prepare data for plotting
+            kx_pos_mask = kx > 0
+            kz_pos_mask = kz > 0
+            spectrum_kx_pos = spectrum_kx[kx_pos_mask]
+            spectrum_kz_pos = spectrum_kz[kz_pos_mask]
+            # For 2D visualization, apply fftshift to center zero frequency
+            spectrum_2d_shift = np.fft.fftshift(spectrum_2d)
+            kx_shift = np.fft.fftshift(kx)
+            kz_shift = np.fft.fftshift(kz)
+            kx_2d, kz_2d = np.meshgrid(kx_shift, kz_shift)
+            spectrum_log = np.log10(spectrum_2d_shift + 1e-12)
+
+            # Subplot 1: 1D streamwise spectrum E(kx)
+            plt.subplot(1, 3, 1)
+            plt.loglog(kx_pos, spectrum_kx_pos, "b-", linewidth=2)
+            plt.xlabel("Streamwise Wavenumber kx")
+            plt.ylabel("Energy Spectrum E(kx)")
+            plt.title("Streamwise Spectrum")
+            plt.grid(True, alpha=0.3)
+
+            # Subplot 2: 1D spanwise spectrum E(kz)
+            plt.subplot(1, 3, 2)
+            plt.loglog(kz_pos, spectrum_kz_pos, "r-", linewidth=2)
+            plt.xlabel("Spanwise Wavenumber kz")
+            plt.ylabel("Energy Spectrum E(kz)")
+            plt.title("Spanwise Spectrum")
+            plt.grid(True, alpha=0.3)
+
+            # Subplot 3: 2D spectrum heatmap
+            plt.subplot(1, 3, 3)
+            contour = plt.contourf(kx_2d, kz_2d, spectrum_log, levels=50, cmap="viridis")
+            plt.colorbar(contour, label="log₁₀(Energy Spectrum)")
+            plt.xlabel("Streamwise Wavenumber kx")
+            plt.ylabel("Spanwise Wavenumber kz")
+            plt.title("2D Spectrum")
+
+            # Overall title
+            fig.suptitle(
+                f"{mode.title()} - {field_name.upper()} Energy Spectra (y={y_slice})",
+                fontsize=14,
+                fontweight="bold",
             )
 
-        plt.close()
+            plt.tight_layout()
+
+            # Save combined figure
+            output_path = self.output_dir / f"{base_name}_combined.png"
+            plt.savefig(output_path, dpi=300, bbox_inches="tight")
+            plt.close()
+            print(f"  Saved spectrum plot: {output_path}")
+
+            # Log to wandb if available
+            if self.wandb_run:
+                self.wandb_run.log({f"spectrum_{mode}_{field_name}": wandb.Image(str(output_path))})
+
+        print(f"Energy spectra plotting for {mode} completed.")
+
+    def _run_energy_spectra_analysis(self, num_future: int = 50, sample_idx: int = 0):
+        """
+        Run energy spectra analysis on predictions and ground truth for 1 plane.
+
+        Args:
+            num_future: Number of future steps to generate
+            sample_idx: Index of the sample to analyze
+        """
+        print(f"Generating {num_future} steps for energy spectra analysis...")
+
+        # Get channel info
+        channel_info = self.test_dataset.get_channel_info()
+        field_names = channel_info["field_names"]  # ["u", "v", "w"]
+        y_slice = channel_info["y_slice"]  # 54
+
+        # Generate autoregressive predictions
+        print("Generating autoregressive predictions...")
+        sample = self.test_dataset[sample_idx]
+        input_seq = sample["data"]["input_seq"].to(self.device)
+
+        pred_frames = self.generate_sequence_prediction(input_seq, num_future)  # (B, T_pred, C, H, W)
+
+        # Denormalize predictions
+        pred_frames_denorm = self.test_dataset.denormalize(pred_frames).cpu().numpy()
+        pred_frames_array = pred_frames_denorm[0]  # (T_pred, C, H, W)
+
+        # Collect ground truth frames
+        print("Collecting ground truth frames...")
+        ground_truth_frames = []
+        for i in range(num_future):
+            if sample_idx + i + 1 < len(self.test_dataset):
+                gt_sample = self.test_dataset[sample_idx + i + 1]
+                gt_frame = gt_sample["data"]["input_seq"][:, -1:, :, :, :]
+                gt_frame_denorm = self.test_dataset.denormalize(gt_frame).cpu().numpy()[0, 0]  # (C, H, W)
+                ground_truth_frames.append(gt_frame_denorm)
+            else:
+                if ground_truth_frames:
+                    ground_truth_frames.append(ground_truth_frames[-1])
+                else:
+                    zero_frame = np.zeros_like(pred_frames_array[0])
+                    ground_truth_frames.append(zero_frame)
+
+        gt_frames_array = np.stack(ground_truth_frames, axis=0)  # (T, C, H, W)
+
+        print(f"Prediction frames shape: {pred_frames_array.shape}")
+        print(f"Ground truth frames shape: {gt_frames_array.shape}")
+
+        # Compute energy spectra
+        print("\nComputing energy spectra for predictions...")
+        pred_spectra = self._compute_energy_spectra(pred_frames_array, field_names, y_slice, dx=1.0, dz=1.0)
+
+        print("\nComputing energy spectra for ground truth...")
+        gt_spectra = self._compute_energy_spectra(gt_frames_array, field_names, y_slice, dx=1.0, dz=1.0)
+
+        # Plot energy spectra
+        print("\nPlotting energy spectra...")
+        self._plot_energy_spectra(pred_spectra, field_names, y_slice, mode="prediction")
+        self._plot_energy_spectra(gt_spectra, field_names, y_slice, mode="ground_truth")
+
+        # Generate comparison plots
+        print("\nGenerating comparison plots...")
+        self._plot_spectra_comparison(pred_spectra, gt_spectra, field_names, y_slice)
+
+        print(f"Energy spectra analysis complete! Results saved to: {self.output_dir}")
+
+    def _plot_spectra_comparison(self, pred_spectra, gt_spectra, field_names, y_slice):
+        """
+        Plot comparison between prediction and ground truth spectra for 1 plane.
+
+        Args:
+            pred_spectra: Prediction spectra from _compute_energy_spectra
+            gt_spectra: Ground truth spectra from _compute_energy_spectra
+            field_names: List of field names
+            y_slice: Y-slice position
+        """
+        print("Creating spectra comparison plots...")
+
+        for field_name in field_names:
+            # Extract data
+            pred_data = pred_spectra["fields"][field_name]
+            gt_data = gt_spectra["fields"][field_name]
+
+            # Create comparison figure
+            fig = plt.figure(figsize=(20, 10))
+
+            # Subplot 1: Streamwise spectrum comparison
+            plt.subplot(2, 2, 1)
+            kx_pos = pred_data["kx_pos"]
+            plt.loglog(kx_pos, pred_data["spectrum_kx"][pred_data["kx"] > 0], "b-", label="Prediction", linewidth=2)
+            plt.loglog(kx_pos, gt_data["spectrum_kx"][gt_data["kx"] > 0], "r--", label="Ground Truth", linewidth=2)
+            plt.xlabel("Streamwise Wavenumber kx")
+            plt.ylabel("Energy Spectrum E(kx)")
+            plt.title("Streamwise Spectrum Comparison")
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+
+            # Subplot 2: Spanwise spectrum comparison
+            plt.subplot(2, 2, 2)
+            kz_pos = pred_data["kz_pos"]
+            plt.loglog(kz_pos, pred_data["spectrum_kz"][pred_data["kz"] > 0], "b-", label="Prediction", linewidth=2)
+            plt.loglog(kz_pos, gt_data["spectrum_kz"][gt_data["kz"] > 0], "r--", label="Ground Truth", linewidth=2)
+            plt.xlabel("Spanwise Wavenumber kz")
+            plt.ylabel("Energy Spectrum E(kz)")
+            plt.title("Spanwise Spectrum Comparison")
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+
+            # Subplot 3: Prediction 2D spectrum
+            plt.subplot(2, 2, 3)
+            spectrum_2d_pred = np.fft.fftshift(pred_data["spectrum_2d"])
+            kx_shift = np.fft.fftshift(pred_data["kx"])
+            kz_shift = np.fft.fftshift(pred_data["kz"])
+            kx_2d, kz_2d = np.meshgrid(kx_shift, kz_shift)
+            contour_pred = plt.contourf(kx_2d, kz_2d, np.log10(spectrum_2d_pred + 1e-12), levels=50, cmap="viridis")
+            plt.colorbar(contour_pred, label="log₁₀(Energy)")
+            plt.xlabel("kx")
+            plt.ylabel("kz")
+            plt.title("Prediction 2D Spectrum")
+
+            # Subplot 4: Ground truth 2D spectrum
+            plt.subplot(2, 2, 4)
+            spectrum_2d_gt = np.fft.fftshift(gt_data["spectrum_2d"])
+            contour_gt = plt.contourf(kx_2d, kz_2d, np.log10(spectrum_2d_gt + 1e-12), levels=50, cmap="viridis")
+            plt.colorbar(contour_gt, label="log₁₀(Energy)")
+            plt.xlabel("kx")
+            plt.ylabel("kz")
+            plt.title("Ground Truth 2D Spectrum")
+
+            fig.suptitle(
+                f"{field_name.upper()} Energy Spectra Comparison (y={y_slice})", fontsize=14, fontweight="bold"
+            )
+            plt.tight_layout()
+
+            # Save
+            output_path = self.output_dir / f"spectrum_comparison_{field_name}_y{y_slice}.png"
+            plt.savefig(output_path, dpi=300, bbox_inches="tight")
+            plt.close()
+            print(f"  Saved comparison plot: {output_path}")
+
+            # Log to wandb
+            if self.wandb_run:
+                self.wandb_run.log({f"spectrum_comparison_{field_name}": wandb.Image(str(output_path))})
+
+        print("Spectra comparison plots completed.")
 
     def create_1plane_animation(self, sample_idx: int = 0, num_future: int = 20):
-        """Create animation showing 1-plane evolution over time."""
+        """Create animation showing 1-plane evolution over time.
+
+        Args:
+            sample_idx: Index of the sample to animate
+            num_future: Number of future steps to predict
+        """
         print(f"Creating 1-plane animation for sample {sample_idx}...")
 
         # Get sample and generate predictions
@@ -567,68 +753,55 @@ class OnePlaneModelEvaluator:
         pred_seq_denorm = self.test_dataset.denormalize(pred_seq)
 
         # Combine input and predictions
-        input_seq = input_seq_denorm.cpu().numpy()[0]  # (T_in, C, H, W)
-        pred_seq = pred_seq_denorm.cpu().numpy()[0]  # (T_pred, C, H, W)
+        input_seq_np = input_seq_denorm.cpu().numpy()[0]  # (T_in, C, H, W)
+        pred_seq_np = pred_seq_denorm.cpu().numpy()[0]  # (T_pred, C, H, W)
 
         # Concatenate: use last input frame + all predictions
-        full_sequence = np.concatenate([input_seq[-1:], pred_seq], axis=0)  # (T_total, C, H, W)
+        full_sequence = np.concatenate([input_seq_np[-1:], pred_seq_np], axis=0)  # (T_total, C, H, W)
 
         # Get channel info
         channel_info = self.test_dataset.get_channel_info()
-        field_names = channel_info["field_names"]
-        y_slices = channel_info["y_slices"]
-        num_planes = channel_info["num_planes"]
+        field_names = channel_info["field_names"]  # ["u", "v", "w"]
+        y_slice = channel_info["y_slice"]  # 54
 
-        # Create figure for animation
-        fig, axes = plt.subplots(num_planes, len(field_names), figsize=(4 * len(field_names), 3 * num_planes))
-
-        if num_planes == 1:
-            axes = axes.reshape(1, -1)
+        # Create figure for animation: 1 row × 3 columns (u, v, w)
+        fig, axes = plt.subplots(1, len(field_names), figsize=(4 * len(field_names), 4))
         if len(field_names) == 1:
-            axes = axes.reshape(-1, 1)
+            axes = [axes]
 
         # Initialize plots
         ims = []
         titles = []
 
-        for plane_idx in range(num_planes):
-            for field_idx, field_name in enumerate(field_names):
-                ax = axes[plane_idx, field_idx]
-                channel_idx = plane_idx * len(field_names) + field_idx
+        for field_idx, field_name in enumerate(field_names):
+            ax = axes[field_idx]
 
-                # Use first frame to set up plot
-                first_frame = full_sequence[0, channel_idx]
+            # Use first frame to set up plot
+            first_frame = full_sequence[0, field_idx]
 
-                if field_name in ["u", "v", "w"]:
-                    cmap = "RdBu_r"
-                    vmax = max(abs(first_frame.min()), abs(first_frame.max()))
-                    vmin = -vmax
-                else:
-                    cmap = "viridis"
-                    vmin, vmax = first_frame.min(), first_frame.max()
+            # All fields are velocity components
+            cmap = "RdBu_r"
+            vmax = max(abs(first_frame.min()), abs(first_frame.max()))
+            vmin = -vmax
 
-                im = ax.imshow(first_frame, cmap=cmap, vmin=vmin, vmax=vmax, origin="lower", animated=True)
-                plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            im = ax.imshow(first_frame, cmap=cmap, vmin=vmin, vmax=vmax, origin="lower", animated=True)
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-                title = ax.set_title(f"Plane{plane_idx} ({field_name}) y={y_slices[plane_idx]}, t=0")
-                titles.append(title)
-                ims.append(im)
+            title = ax.set_title(f"{field_name.upper()} (y={y_slice}), t=0")
+            titles.append(title)
+            ims.append(im)
 
-                ax.set_xlabel("x")
-                ax.set_ylabel("z")
+            ax.set_xlabel("x")
+            ax.set_ylabel("z")
 
         def animate(frame):
             """Animation function."""
-            for plane_idx in range(num_planes):
-                for field_idx, field_name in enumerate(field_names):
-                    idx = plane_idx * len(field_names) + field_idx
-                    channel_idx = plane_idx * len(field_names) + field_idx
+            for field_idx, field_name in enumerate(field_names):
+                # Update image data
+                ims[field_idx].set_array(full_sequence[frame, field_idx])
 
-                    # Update image data
-                    ims[idx].set_array(full_sequence[frame, channel_idx])
-
-                    # Update title
-                    titles[idx].set_text(f"Plane{plane_idx} ({field_name}) y={y_slices[plane_idx]}, t={frame}")
+                # Update title
+                titles[field_idx].set_text(f"{field_name.upper()} (y={y_slice}), t={frame}")
 
             return ims + titles
 
@@ -637,23 +810,38 @@ class OnePlaneModelEvaluator:
 
         # Save animation
         output_path = self.output_dir / f"1plane_animation_sample_{sample_idx}.mp4"
-        writer = animation.FFMpegWriter(fps=5, metadata=dict(artist="FlowSwin3Plane"), bitrate=1800)
-        anim.save(output_path, writer=writer)
-        print(f"Saved animation: {output_path}")
+        try:
+            writer = animation.FFMpegWriter(fps=5, metadata=dict(artist="FlowSwin1Plane"), bitrate=1800)
+            anim.save(output_path, writer=writer)
+            print(f"Saved animation: {output_path}")
 
-        # Log to wandb if available
-        if self.wandb_run:
-            # 使用和evaluation_new.py一致的策略：不指定step，让WandB自动处理
-            self.wandb_run.log(
-                {
-                    f"1plane_animation_sample_{sample_idx}": wandb.Video(str(output_path)),
-                }
-            )
+            # Log to wandb if available
+            if self.wandb_run:
+                self.wandb_run.log({f"1plane_animation_sample_{sample_idx}": wandb.Video(str(output_path))})
+        except Exception as e:
+            print(f"Warning: Could not save animation as MP4: {e}")
+            print("Trying to save as GIF instead...")
+            output_path_gif = self.output_dir / f"1plane_animation_sample_{sample_idx}.gif"
+            anim.save(output_path_gif, writer="pillow", fps=5)
+            print(f"Saved animation as GIF: {output_path_gif}")
+
+            # Log GIF to wandb
+            if self.wandb_run:
+                self.wandb_run.log({f"1plane_animation_sample_{sample_idx}": wandb.Video(str(output_path_gif))})
 
         plt.close()
 
-    def run_comprehensive_evaluation(self, num_samples: int = 1, num_future: int = 20):
-        """Run comprehensive evaluation with both autoregressive and teacher forcing modes."""
+    def run_comprehensive_evaluation(
+        self, num_samples: int = 1, num_future: int = 20, run_spectra: bool = True, create_animation: bool = True
+    ):
+        """Run comprehensive evaluation including energy spectra analysis and animation.
+
+        Args:
+            num_samples: Number of samples to evaluate
+            num_future: Number of future steps to predict
+            run_spectra: Whether to run energy spectra analysis (default: True)
+            create_animation: Whether to create animation video (default: True)
+        """
         print(f"Running comprehensive evaluation on {num_samples} samples with {num_future} future steps...")
 
         # Test data evaluation (autoregressive)
@@ -665,984 +853,28 @@ class OnePlaneModelEvaluator:
                 print(f"\n=== Evaluating Sample {i} (Autoregressive) ===")
                 self.visualize_1plane_prediction(sample_idx=i, num_future=num_future)
 
-                if i == 0:  # Create animation only for first sample
-                    self.create_1plane_animation(sample_idx=i, num_future=num_future)
+        # Animation generation
+        if create_animation:
+            print("\n" + "=" * 60)
+            print("ANIMATION GENERATION")
+            print("=" * 60)
+            self.create_1plane_animation(sample_idx=0, num_future=20)
 
-        # Training data evaluation (teacher forcing)
-        print("\n" + "=" * 60)
-        print("TRAINING DATA EVALUATION (Teacher Forcing)")
-        print("=" * 60)
-        self.visualize_teacher_forcing(split="train", sample_idx=0, num_future=num_future)
-
-        # Validation data evaluation (teacher forcing)
-        print("\n" + "=" * 60)
-        print("VALIDATION DATA EVALUATION (Teacher Forcing)")
-        print("=" * 60)
-        self.visualize_teacher_forcing(split="val", sample_idx=0, num_future=num_future)
-
-        # Training data evaluation (autoregressive)
-        print("\n" + "=" * 60)
-        print("TRAINING DATA EVALUATION (Autoregressive)")
-        print("=" * 60)
-        self.visualize_autoregressive(split="train", sample_idx=0, num_future=num_future)
-
-        # Validation data evaluation (autoregressive)
-        print("\n" + "=" * 60)
-        print("VALIDATION DATA EVALUATION (Autoregressive)")
-        print("=" * 60)
-        self.visualize_autoregressive(split="val", sample_idx=0, num_future=num_future)
-
-        # Energy Spectra Analysis
-        print("\n" + "=" * 60)
-        print("ENERGY SPECTRA ANALYSIS")
-        print("=" * 60)
-        self._run_energy_spectra_analysis(num_future=num_future)
+        # Energy spectra analysis
+        if run_spectra:
+            print("\n" + "=" * 60)
+            print("ENERGY SPECTRA ANALYSIS")
+            print("=" * 60)
+            self._run_energy_spectra_analysis(num_future=20, sample_idx=0)
 
         print(f"\nEvaluation complete! Results saved to: {self.output_dir}")
         print("\nGenerated visualizations:")
-        print("- Individual channel images (12 files per sample: 3 planes × 4 channels)")
-        print("- Comprehensive overview images")
-        print("- Detailed error analysis files")
-        print("- Animations for temporal evolution")
-        print("- Teacher forcing comparisons")
-        print("- Autoregressive predictions")
-        print("- Energy spectra analysis (1D and 2D spectra)")
-
-    def visualize_teacher_forcing(self, split: str = "train", sample_idx: int = 0, num_future: int = 20):
-        """Evaluate using teacher forcing (ground truth as input) for train/val data."""
-        print(f"Evaluating {split} data with teacher forcing...")
-
-        if split == "train":
-            dataset = self.train_dataset
-        elif split == "val":
-            dataset = self.val_dataset
-        else:
-            raise ValueError("Only 'train' and 'val' splits supported for teacher forcing")
-
-        # Collect predictions and ground truth
-        ground_truth_frames = []
-        predictions = []
-
-        print("\nTeacher Forcing Results:")
-        print("Step | Plane | Field | MSE      | MAE      | RMS-Rel Error")
-        print("-" * 60)
-
-        for i in range(num_future):
-            if sample_idx + i < len(dataset):
-                sample = dataset[sample_idx + i]
-                input_seq = sample["data"]["input_seq"].to(self.device)
-                target = sample["label"]  # (1, 1, C, H, W)
-
-                # Denormalize target for comparison
-                target_denorm = dataset.denormalize(target).cpu().numpy()[0, 0]  # (C, H, W)
-                ground_truth_frames.append(target_denorm)
-
-                # Teacher forcing prediction
-                with torch.no_grad():
-                    pred = self.model(input_seq)  # (1, C, H, W)
-                    pred_denorm = dataset.denormalize(pred).cpu().numpy()[0]  # (C, H, W)
-                    predictions.append(pred_denorm)
-
-                # Calculate per-channel errors for first few steps
-                if i < 10:  # Print first 10 steps
-                    channel_info = dataset.get_channel_info()
-                    field_names = channel_info["field_names"]  # ["u", "v", "w"]
-                    num_planes = channel_info["num_planes"]  # Get num_planes from channel info
-
-                    for plane_idx in range(num_planes):
-                        for field_idx, field_name in enumerate(field_names):
-                            channel_idx = plane_idx * len(field_names) + field_idx
-
-                            pred_data = pred_denorm[channel_idx]
-                            target_data = target_denorm[channel_idx]
-
-                            mse = np.mean((pred_data - target_data) ** 2)
-                            mae = np.mean(np.abs(pred_data - target_data))
-                            target_rms = np.sqrt(np.mean(target_data**2))
-                            rms_rel_error = np.sqrt(mse) / (target_rms + 1e-8)
-
-                            print(
-                                f"{i + 1:4d} | {plane_idx:5d} | {field_name:5s} | "
-                                f"{mse:.6f} | {mae:.6f} | {rms_rel_error:.6f}"
-                            )
-
-        # Save teacher forcing errors to file
-        self._save_teacher_forcing_errors(ground_truth_frames, predictions, split, sample_idx)
-
-        # Create detailed teacher forcing visualization
-        self._create_teacher_forcing_visualization(ground_truth_frames, predictions, split, sample_idx)
-
-        return ground_truth_frames, predictions
-
-    def visualize_autoregressive(self, split: str = "train", sample_idx: int = 0, num_future: int = 20):
-        """Evaluate using autoregressive prediction for train/val data."""
-        print(f"\nEvaluating {split} data with autoregressive prediction...")
-
-        if split == "train":
-            dataset = self.train_dataset
-        elif split == "val":
-            dataset = self.val_dataset
-        else:
-            raise ValueError("Only 'train' and 'val' splits supported for autoregressive")
-
-        # Get ground truth sequence
-        ground_truth_frames = []
-        for i in range(num_future):
-            if sample_idx + i < len(dataset):
-                sample_i = dataset[sample_idx + i]
-                target_i = sample_i["label"]  # (1, 1, C, H, W)
-                target_denorm = dataset.denormalize(target_i)
-                target_frame = target_denorm.cpu().numpy()[0, 0]  # (C, H, W)
-                ground_truth_frames.append(target_frame)
-            else:
-                if ground_truth_frames:
-                    ground_truth_frames.append(ground_truth_frames[-1])
-
-        # Get initial sample for autoregressive prediction
-        sample = dataset[sample_idx]
-        input_seq = sample["data"]["input_seq"].to(self.device)
-
-        # Generate autoregressive predictions
-        pred_seq = self.generate_sequence_prediction(input_seq, num_future)
-        pred_seq_denorm = dataset.denormalize(pred_seq)
-        pred_seq = pred_seq_denorm.cpu().numpy()[0]  # (T_pred, C, H, W)
-
-        print("\nAutoregressive Results:")
-        print("Step | Plane | Field | MSE      | MAE      | RMS-Rel Error")
-        print("-" * 60)
-
-        # Calculate metrics
-        channel_info = dataset.get_channel_info()
-        field_names = channel_info["field_names"]
-        y_slices = channel_info["y_slices"]
-        num_planes = channel_info["num_planes"]  # Get num_planes from channel info
-
-        num_steps = min(len(ground_truth_frames), pred_seq.shape[0], 10)
-        for i in range(num_steps):
-            pred_frame = pred_seq[i]
-            gt_frame = ground_truth_frames[i]
-
-            for plane_idx in range(num_planes):
-                for field_idx, field_name in enumerate(field_names):
-                    channel_idx = plane_idx * len(field_names) + field_idx
-
-                    pred_data = pred_frame[channel_idx]
-                    target_data = gt_frame[channel_idx]
-
-                    mse = np.mean((pred_data - target_data) ** 2)
-                    mae = np.mean(np.abs(pred_data - target_data))
-                    target_rms = np.sqrt(np.mean(target_data**2))
-                    rms_rel_error = np.sqrt(mse) / (target_rms + 1e-8)
-
-                    print(
-                        f"{i + 1:4d} | {plane_idx:5d} | {field_name:5s} | {mse:.6f} | {mae:.6f} | {rms_rel_error:.6f}"
-                    )
-
-        # Save autoregressive errors and create visualization
-        self._save_detailed_error_analysis(
-            pred_seq, ground_truth_frames, f"{split}_{sample_idx}", field_names, y_slices
-        )
-        self._create_autoregressive_visualization(ground_truth_frames, pred_seq, split, sample_idx)
-
-        return ground_truth_frames, pred_seq
-
-    def _save_teacher_forcing_errors(self, ground_truth_frames, predictions, split, sample_idx):
-        """Save detailed teacher forcing errors to Excel and text files."""
-        import pandas as pd
-
-        if not ground_truth_frames or not predictions:
-            return
-
-        # Calculate detailed errors for all timesteps and channels
-        error_data = {"timestep": [], "plane": [], "field": [], "channel": [], "mse": [], "mae": [], "rms_rel": []}
-
-        channel_info = self.test_dataset.get_channel_info()  # Use test dataset channel info
-        field_names = channel_info["field_names"]
-        num_planes = channel_info["num_planes"]
-        # y_slices = channel_info["y_slices"]  # (unused)
-
-        for t, (pred, target) in enumerate(zip(predictions, ground_truth_frames, strict=False)):
-            for plane_idx in range(num_planes):
-                for field_idx, field_name in enumerate(field_names):
-                    channel_idx = plane_idx * len(field_names) + field_idx
-
-                    pred_data = pred[channel_idx]
-                    target_data = target[channel_idx]
-
-                    mse = np.mean((pred_data - target_data) ** 2)
-                    mae = np.mean(np.abs(pred_data - target_data))
-                    target_rms = np.sqrt(np.mean(target_data**2))
-                    rms_rel_error = np.sqrt(mse) / (target_rms + 1e-8)
-
-                    error_data["timestep"].append(t + 1)
-                    error_data["plane"].append(plane_idx)
-                    error_data["field"].append(field_name)
-                    error_data["channel"].append(f"plane_{plane_idx}_{field_name}")
-                    error_data["mse"].append(mse)
-                    error_data["mae"].append(mae)
-                    error_data["rms_rel"].append(rms_rel_error)
-
-        # Create DataFrame
-        df = pd.DataFrame(error_data)
-
-        # Save to text file (CSV format)
-        txt_path = self.output_dir / f"errors_teacher_forcing_{split}_sample_{sample_idx}.txt"
-        df.to_csv(txt_path, sep="\t", index=False)
-
-        # Try to save to Excel if openpyxl is available
-        try:
-            excel_path = self.output_dir / f"errors_teacher_forcing_{split}_sample_{sample_idx}.xlsx"
-            df.to_excel(excel_path, index=False)
-            print(f"Saved teacher forcing errors to: {excel_path} and {txt_path}")
-        except ImportError:
-            print(
-                f"Saved teacher forcing errors to: {txt_path} "
-                "(Excel not available - install openpyxl for .xlsx support)"
-            )
-
-    def _create_1plane_comparison_plot(self, ground_truth_frames, predictions, mode, sample_idx):
-        """Create detailed plane-wise comparison visualization."""
-        import matplotlib.pyplot as plt
-
-        if not ground_truth_frames or not predictions:
-            return
-
-        # Use first timestep for visualization
-        pred = predictions[0]
-        target = ground_truth_frames[0]
-
-        # Create 3x4 subplot (3 planes x 4 fields)
-        fig, axes = plt.subplots(3, 4, figsize=(20, 15))
-        fig.suptitle(f"3-Plane Comparison: {mode} (Sample {sample_idx})", fontsize=16)
-
-        channel_info = self.test_dataset.get_channel_info()
-        field_names = channel_info["field_names"]
-        y_slices = channel_info["y_slices"]
-        num_planes = channel_info["num_planes"]
-
-        for plane_idx in range(num_planes):
-            for field_idx, field_name in enumerate(field_names):
-                ax = axes[plane_idx, field_idx]
-                channel_idx = plane_idx * len(field_names) + field_idx
-
-                # Create side-by-side comparison: prediction | ground truth
-                pred_field = pred[channel_idx]
-                target_field = target[channel_idx]
-                combined = np.concatenate([pred_field, target_field], axis=1)
-
-                # Use field-specific colormap
-                if field_name in ["u", "v", "w"]:
-                    cmap = "RdBu_r"
-                    vmax = max(abs(combined.min()), abs(combined.max()))
-                    vmin = -vmax
-                else:
-                    cmap = "viridis"
-                    vmin, vmax = combined.min(), combined.max()
-
-                im = ax.imshow(combined, cmap=cmap, vmin=vmin, vmax=vmax, origin="lower")
-
-                ax.set_title(f"Plane {plane_idx} (y={y_slices[plane_idx]}) - {field_name.upper()}\nPred | GT")
-                ax.axis("off")
-
-                # Add colorbar
-                plt.colorbar(im, ax=ax, shrink=0.6)
-
-        plt.tight_layout()
-
-        # Save plot
-        save_path = self.output_dir / f"1plane_comparison_{mode}_sample_{sample_idx}.png"
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-        plt.close()
-
-        print(f"Saved {mode} visualization: {save_path}")
-
-    def _save_detailed_error_analysis(self, pred_seq, ground_truth_frames, sample_idx, field_names, y_slices):
-        """Save detailed error analysis for autoregressive predictions."""
-        import pandas as pd
-
-        # Calculate detailed errors for all timesteps and channels
-        error_data = {
-            "timestep": [],
-            "plane": [],
-            "field": [],
-            "y_slice": [],
-            "channel": [],
-            "mse": [],
-            "mae": [],
-            "rms_rel": [],
-            "max_error": [],
-            "mean_gt": [],
-            "std_gt": [],
-        }
-
-        num_timesteps = min(len(ground_truth_frames), pred_seq.shape[0])
-        num_planes = len(y_slices)
-
-        for t in range(num_timesteps):
-            pred_frame = pred_seq[t]  # (C, H, W)
-            gt_frame = ground_truth_frames[t]  # (C, H, W)
-
-            for plane_idx in range(num_planes):
-                for field_idx, field_name in enumerate(field_names):
-                    channel_idx = plane_idx * len(field_names) + field_idx
-                    y_slice = y_slices[plane_idx]
-
-                    pred_data = pred_frame[channel_idx]
-                    gt_data = gt_frame[channel_idx]
-
-                    # Calculate comprehensive error metrics
-                    error = pred_data - gt_data
-                    abs_error = np.abs(error)
-
-                    mse = np.mean(error**2)
-                    mae = np.mean(abs_error)
-                    max_error = np.max(abs_error)
-
-                    # Ground truth statistics
-                    mean_gt = np.mean(gt_data)
-                    std_gt = np.std(gt_data)
-
-                    # RMS relative error
-                    gt_rms = np.sqrt(np.mean(gt_data**2))
-                    rms_rel_error = np.sqrt(mse) / (gt_rms + 1e-8)
-
-                    error_data["timestep"].append(t + 1)
-                    error_data["plane"].append(plane_idx)
-                    error_data["field"].append(field_name)
-                    error_data["y_slice"].append(y_slice)
-                    error_data["channel"].append(f"plane_{plane_idx}_{field_name}")
-                    error_data["mse"].append(mse)
-                    error_data["mae"].append(mae)
-                    error_data["rms_rel"].append(rms_rel_error)
-                    error_data["max_error"].append(max_error)
-                    error_data["mean_gt"].append(mean_gt)
-                    error_data["std_gt"].append(std_gt)
-
-        # Create DataFrame
-        df = pd.DataFrame(error_data)
-
-        # Save to text file (CSV format)
-        txt_path = self.output_dir / f"detailed_errors_autoregressive_sample_{sample_idx}.txt"
-        df.to_csv(txt_path, sep="\t", index=False)
-
-        # Save summary statistics
-        summary_path = self.output_dir / f"error_summary_sample_{sample_idx}.txt"
-        with open(summary_path, "w") as f:
-            f.write(f"Error Analysis Summary for Sample {sample_idx}\n")
-            f.write("=" * 50 + "\n\n")
-
-            # Overall statistics
-            f.write("Overall Statistics:\n")
-            f.write(f"Total timesteps analyzed: {num_timesteps}\n")
-            f.write(f"Average MSE across all channels: {df['mse'].mean():.6f}\n")
-            f.write(f"Average MAE across all channels: {df['mae'].mean():.6f}\n")
-            f.write(f"Average RMS-Rel Error: {df['rms_rel'].mean():.6f}\n\n")
-
-            # Per-field statistics
-            f.write("Per-Field Statistics:\n")
-            for field in field_names:
-                field_data = df[df["field"] == field]
-                if not field_data.empty:
-                    f.write(f"  {field.upper()}:\n")
-                    f.write(f"    MSE: {field_data['mse'].mean():.6f} ± {field_data['mse'].std():.6f}\n")
-                    f.write(f"    MAE: {field_data['mae'].mean():.6f} ± {field_data['mae'].std():.6f}\n")
-                    f.write(f"    RMS-Rel: {field_data['rms_rel'].mean():.6f} ± {field_data['rms_rel'].std():.6f}\n")
-
-            f.write("\n")
-
-            # Per-plane statistics
-            f.write("Per-Plane Statistics:\n")
-            for plane_idx in range(num_planes):
-                y_slice = y_slices[plane_idx]
-                plane_data = df[df["plane"] == plane_idx]
-                if not plane_data.empty:
-                    f.write(f"  Plane {plane_idx} (y={y_slice}):\n")
-                    f.write(f"    MSE: {plane_data['mse'].mean():.6f} ± {plane_data['mse'].std():.6f}\n")
-                    f.write(f"    MAE: {plane_data['mae'].mean():.6f} ± {plane_data['mae'].std():.6f}\n")
-                    f.write(f"    RMS-Rel: {plane_data['rms_rel'].mean():.6f} ± {plane_data['rms_rel'].std():.6f}\n")
-
-        # Try to save to Excel if openpyxl is available
-        try:
-            excel_path = self.output_dir / f"detailed_errors_autoregressive_sample_{sample_idx}.xlsx"
-            with pd.ExcelWriter(excel_path, engine="openpyxl") as writer:
-                df.to_excel(writer, sheet_name="Detailed_Errors", index=False)
-
-                # Create summary sheet
-                summary_stats = []
-
-                # Overall stats
-                summary_stats.append(["Metric", "Value"])
-                summary_stats.append(["Total Timesteps", num_timesteps])
-                summary_stats.append(["Overall MSE", df["mse"].mean()])
-                summary_stats.append(["Overall MAE", df["mae"].mean()])
-                summary_stats.append(["Overall RMS-Rel", df["rms_rel"].mean()])
-                summary_stats.append(["", ""])
-
-                # Per-field stats
-                summary_stats.append(["Per-Field Statistics", ""])
-                for field in field_names:
-                    field_data = df[df["field"] == field]
-                    if not field_data.empty:
-                        summary_stats.append([f"{field.upper()} MSE", field_data["mse"].mean()])
-                        summary_stats.append([f"{field.upper()} MAE", field_data["mae"].mean()])
-                        summary_stats.append([f"{field.upper()} RMS-Rel", field_data["rms_rel"].mean()])
-
-                summary_df = pd.DataFrame(summary_stats)
-                summary_df.to_excel(writer, sheet_name="Summary", index=False, header=False)
-
-            print(f"Saved detailed error analysis to: {excel_path}, {txt_path}, and {summary_path}")
-        except ImportError:
-            print(
-                f"Saved detailed error analysis to: {txt_path} and {summary_path} "
-                "(Excel not available - install openpyxl for .xlsx support)"
-            )
-
-        return df
-
-    def _create_teacher_forcing_visualization(self, ground_truth_frames, predictions, split, sample_idx):
-        """Create detailed teacher forcing visualization."""
-        channel_info = self.test_dataset.get_channel_info()
-        field_names = channel_info["field_names"]
-        y_slices = channel_info["y_slices"]
-        num_planes = len(y_slices)
-
-        # Limit display steps
-        display_steps = min(len(predictions), 15)
-
-        # Create one visualization per channel
-        for plane_idx in range(num_planes):
-            y_slice = y_slices[plane_idx]
-
-            for field_idx, field_name in enumerate(field_names):
-                channel_idx = plane_idx * len(field_names) + field_idx
-
-                # Create figure: 3 rows (GT, Pred, Error) × timesteps
-                fig, axes = plt.subplots(3, display_steps, figsize=(2 * display_steps, 8))
-                if display_steps == 1:
-                    axes = axes.reshape(3, 1)
-
-                # Calculate channel-specific colorbar range
-                all_data = []
-                for t in range(display_steps):
-                    all_data.append(ground_truth_frames[t][channel_idx])
-                    all_data.append(predictions[t][channel_idx])
-
-                if field_name in ["u", "v", "w"]:
-                    cmap = "RdBu_r"
-                    vmax = max([abs(data.min()) for data in all_data] + [abs(data.max()) for data in all_data])
-                    vmin = -vmax
-                else:
-                    cmap = "viridis"
-                    vmin = min([data.min() for data in all_data])
-                    vmax = max([data.max() for data in all_data])
-
-                for t in range(display_steps):
-                    gt_data = ground_truth_frames[t][channel_idx]
-                    pred_data = predictions[t][channel_idx]
-                    error = np.abs(pred_data - gt_data)
-
-                    # Ground truth
-                    im1 = axes[0, t].imshow(gt_data, cmap=cmap, vmin=vmin, vmax=vmax, origin="lower")
-                    axes[0, t].set_title(f"GT t+{t + 1}", fontsize=8)
-                    axes[0, t].set_xticks([])
-                    axes[0, t].set_yticks([])
-
-                    # Prediction
-                    im2 = axes[1, t].imshow(pred_data, cmap=cmap, vmin=vmin, vmax=vmax, origin="lower")
-                    axes[1, t].set_title(f"TF t+{t + 1}", fontsize=8)
-                    axes[1, t].set_xticks([])
-                    axes[1, t].set_yticks([])
-
-                    # Error
-                    im3 = axes[2, t].imshow(error, cmap="Reds", origin="lower")
-                    mae = np.mean(error)
-                    axes[2, t].set_title(f"Err\nMAE:{mae:.3f}", fontsize=8)
-                    axes[2, t].set_xticks([])
-                    axes[2, t].set_yticks([])
-
-                    # Add colorbar for first column
-                    if t == 0:
-                        plt.colorbar(im1, ax=axes[0, t], fraction=0.046, pad=0.04)
-                        plt.colorbar(im2, ax=axes[1, t], fraction=0.046, pad=0.04)
-                        plt.colorbar(im3, ax=axes[2, t], fraction=0.046, pad=0.04)
-
-                # Set row labels
-                axes[0, 0].set_ylabel("Ground Truth", fontsize=10)
-                axes[1, 0].set_ylabel("Teacher Forcing", fontsize=10)
-                axes[2, 0].set_ylabel("Error", fontsize=10)
-
-                plt.suptitle(
-                    f"{split.upper()} - Plane {plane_idx} - {field_name.upper()} (y={y_slice}) - Teacher Forcing",
-                    fontsize=12,
-                )
-                plt.tight_layout()
-
-                # Save visualization
-                output_path = self.output_dir / f"{split}_tf_plane{plane_idx}_{field_name}_sample_{sample_idx}.png"
-                plt.savefig(output_path, dpi=300, bbox_inches="tight")
-                print(f"Saved TF visualization: {output_path}")
-
-                # Log to wandb
-                if self.wandb_run:
-                    self.wandb_run.log(
-                        {f"{split}_tf_plane{plane_idx}_{field_name}_sample_{sample_idx}": wandb.Image(str(output_path))}
-                    )
-
-                plt.close()
-
-    def _create_autoregressive_visualization(self, ground_truth_frames, pred_seq, split, sample_idx):
-        """Create detailed autoregressive visualization."""
-        channel_info = self.test_dataset.get_channel_info()
-        field_names = channel_info["field_names"]
-        y_slices = channel_info["y_slices"]
-        num_planes = len(y_slices)
-
-        # Limit display steps
-        display_steps = min(len(ground_truth_frames), pred_seq.shape[0], 15)
-
-        # Create one visualization per channel
-        for plane_idx in range(num_planes):
-            y_slice = y_slices[plane_idx]
-
-            for field_idx, field_name in enumerate(field_names):
-                channel_idx = plane_idx * len(field_names) + field_idx
-
-                # Create figure: 3 rows (GT, Pred, Error) × timesteps
-                fig, axes = plt.subplots(3, display_steps, figsize=(2 * display_steps, 8))
-                if display_steps == 1:
-                    axes = axes.reshape(3, 1)
-
-                # Calculate channel-specific colorbar range
-                all_data = []
-                for t in range(display_steps):
-                    all_data.append(ground_truth_frames[t][channel_idx])
-                    all_data.append(pred_seq[t][channel_idx])
-
-                if field_name in ["u", "v", "w"]:
-                    cmap = "RdBu_r"
-                    vmax = max([abs(data.min()) for data in all_data] + [abs(data.max()) for data in all_data])
-                    vmin = -vmax
-                else:
-                    cmap = "viridis"
-                    vmin = min([data.min() for data in all_data])
-                    vmax = max([data.max() for data in all_data])
-
-                for t in range(display_steps):
-                    gt_data = ground_truth_frames[t][channel_idx]
-                    pred_data = pred_seq[t][channel_idx]
-                    error = np.abs(pred_data - gt_data)
-
-                    # Ground truth
-                    im1 = axes[0, t].imshow(gt_data, cmap=cmap, vmin=vmin, vmax=vmax, origin="lower")
-                    axes[0, t].set_title(f"GT t+{t + 1}", fontsize=8)
-                    axes[0, t].set_xticks([])
-                    axes[0, t].set_yticks([])
-
-                    # Prediction
-                    im2 = axes[1, t].imshow(pred_data, cmap=cmap, vmin=vmin, vmax=vmax, origin="lower")
-                    axes[1, t].set_title(f"AR t+{t + 1}", fontsize=8)
-                    axes[1, t].set_xticks([])
-                    axes[1, t].set_yticks([])
-
-                    # Error
-                    im3 = axes[2, t].imshow(error, cmap="Reds", origin="lower")
-                    mae = np.mean(error)
-                    axes[2, t].set_title(f"Err\nMAE:{mae:.3f}", fontsize=8)
-                    axes[2, t].set_xticks([])
-                    axes[2, t].set_yticks([])
-
-                    # Add colorbar for first column
-                    if t == 0:
-                        plt.colorbar(im1, ax=axes[0, t], fraction=0.046, pad=0.04)
-                        plt.colorbar(im2, ax=axes[1, t], fraction=0.046, pad=0.04)
-                        plt.colorbar(im3, ax=axes[2, t], fraction=0.046, pad=0.04)
-
-                # Set row labels
-                axes[0, 0].set_ylabel("Ground Truth", fontsize=10)
-                axes[1, 0].set_ylabel("Autoregressive", fontsize=10)
-                axes[2, 0].set_ylabel("Error", fontsize=10)
-
-                plt.suptitle(
-                    f"{split.upper()} - Plane {plane_idx} - {field_name.upper()} (y={y_slice}) - Autoregressive",
-                    fontsize=12,
-                )
-                plt.tight_layout()
-
-                # Save visualization
-                output_path = self.output_dir / f"{split}_ar_plane{plane_idx}_{field_name}_sample_{sample_idx}.png"
-                plt.savefig(output_path, dpi=300, bbox_inches="tight")
-                print(f"Saved AR visualization: {output_path}")
-
-                # Log to wandb
-                if self.wandb_run:
-                    self.wandb_run.log(
-                        {f"{split}_ar_plane{plane_idx}_{field_name}_sample_{sample_idx}": wandb.Image(str(output_path))}
-                    )
-
-                plt.close()
-
-    def _compute_energy_spectra(self, frames, field_names, y_slices, dx=1.0, dz=1.0):
-        """
-        Compute energy spectra from prediction frames.
-
-        Args:
-            frames: Tensor of shape (T, C, H, W) where C=12 (3 planes × 4 fields)
-            field_names: List of field names ["u", "v", "w", "p"]
-            y_slices: List of y-slice positions [29, 54, 75]
-            dx: Grid spacing in x direction
-            dz: Grid spacing in z direction
-
-        Returns:
-            dict: Dictionary containing spectra data for each plane and field
-        """
-        print("Computing energy spectra...")
-
-        if isinstance(frames, torch.Tensor):
-            frames = frames.detach().cpu().numpy()
-
-        T, _C, H, W = frames.shape
-        spectra_results = {}
-        num_planes = len(y_slices)  # Number of planes from y_slices
-
-        # Compute frequency grids (no fftshift here, only in visualization)
-        kx = np.fft.fftfreq(W, dx)  # x-direction wavenumbers
-        kz = np.fft.fftfreq(H, dz)  # z-direction wavenumbers
-
-        # Only keep positive frequencies for plotting
-        kx_pos = kx[kx > 0]
-        kz_pos = kz[kz > 0]
-
-        for plane_idx in range(num_planes):
-            y_slice = y_slices[plane_idx]
-            spectra_results[f"plane{plane_idx}"] = {"y_slice": y_slice, "fields": {}}
-
-            for field_idx, field_name in enumerate(field_names):
-                print(f"  Processing plane {plane_idx} ({field_name}) at y={y_slice}")
-
-                # Extract channel data for this plane and field
-                channel_idx = plane_idx * len(field_names) + field_idx
-                field_data = frames[:, channel_idx, :, :]  # Shape: (T, H, W)
-
-                # Time-averaged energy spectrum
-                spectrum_2d_sum = np.zeros((H, W))
-
-                for t in range(T):
-                    # Remove plane average (mean) before FFT
-                    data_slice = field_data[t] - np.mean(field_data[t])
-
-                    # Compute 2D FFT with proper normalization
-                    fft_2d = np.fft.fft2(data_slice) / (H * W)
-
-                    # Compute energy spectrum: E(kx, kz) = 0.5 * |q_hat|^2
-                    spectrum_2d = 0.5 * np.abs(fft_2d) ** 2
-                    spectrum_2d_sum += spectrum_2d
-
-                # Time average (do NOT apply fftshift here, only for visualization)
-                spectrum_2d_avg = spectrum_2d_sum / T
-
-                # Compute 1D spectra by integration
-                # Streamwise spectrum E(kx) = sum over kz
-                spectrum_kx = np.sum(spectrum_2d_avg, axis=0)  # Sum over H (kz direction)
-
-                # Spanwise spectrum E(kz) = sum over kx
-                spectrum_kz = np.sum(spectrum_2d_avg, axis=1)  # Sum over W (kx direction)
-
-                # Store results
-                spectra_results[f"plane{plane_idx}"]["fields"][field_name] = {
-                    "spectrum_2d": spectrum_2d_avg,
-                    "spectrum_kx": spectrum_kx,
-                    "spectrum_kz": spectrum_kz,
-                    "kx": kx,
-                    "kz": kz,
-                    "kx_pos": kx_pos,
-                    "kz_pos": kz_pos,
-                }
-
-        print("Energy spectra computation completed.")
-        return spectra_results
-
-    def _plot_energy_spectra(self, spectra, field_names, y_slices, mode="prediction"):
-        """
-        Plot and save energy spectra.
-
-        Args:
-            spectra: Dictionary containing spectra data from _compute_energy_spectra
-            field_names: List of field names
-            y_slices: List of y-slice positions
-            mode: String identifier for the plot type ("prediction" or "ground_truth")
-        """
-        print(f"Plotting energy spectra for {mode}...")
-        num_planes = len(y_slices)
-
-        for plane_idx in range(num_planes):
-            y_slice = y_slices[plane_idx]
-            plane_data = spectra[f"plane{plane_idx}"]
-
-            for field_name in field_names:
-                field_data = plane_data["fields"][field_name]
-
-                # Extract data
-                spectrum_2d = field_data["spectrum_2d"]
-                spectrum_kx = field_data["spectrum_kx"]
-                spectrum_kz = field_data["spectrum_kz"]
-                kx = field_data["kx"]
-                kz = field_data["kz"]
-                kx_pos = field_data["kx_pos"]
-                kz_pos = field_data["kz_pos"]
-
-                # Save numerical data
-                base_name = f"spectrum_{mode}_plane{plane_idx}_{field_name}"
-                np.save(self.output_dir / f"{base_name}_2d.npy", spectrum_2d)
-                np.save(self.output_dir / f"{base_name}_kx.npy", spectrum_kx)
-                np.save(self.output_dir / f"{base_name}_kz.npy", spectrum_kz)
-
-                # Create combined figure with all spectrum visualizations
-                fig = plt.figure(figsize=(18, 6))
-
-                # Prepare data for plotting
-                kx_pos_mask = kx > 0
-                kz_pos_mask = kz > 0
-                spectrum_kx_pos = spectrum_kx[kx_pos_mask]
-                spectrum_kz_pos = spectrum_kz[kz_pos_mask]
-                # For 2D visualization, apply fftshift to center zero frequency
-                spectrum_2d_shift = np.fft.fftshift(spectrum_2d)
-                kx_shift = np.fft.fftshift(kx)
-                kz_shift = np.fft.fftshift(kz)
-                kx_2d, kz_2d = np.meshgrid(kx_shift, kz_shift)
-                spectrum_log = np.log10(spectrum_2d_shift + 1e-12)
-
-                # Subplot 1: 1D streamwise spectrum E(kx)
-                plt.subplot(1, 3, 1)
-                plt.loglog(kx_pos, spectrum_kx_pos, "b-", linewidth=2)
-                plt.xlabel("Streamwise Wavenumber kx")
-                plt.ylabel("Energy Spectrum E(kx)")
-                plt.title("Streamwise Spectrum")
-                plt.grid(True, alpha=0.3)
-
-                # Subplot 2: 1D spanwise spectrum E(kz)
-                plt.subplot(1, 3, 2)
-                plt.loglog(kz_pos, spectrum_kz_pos, "r-", linewidth=2)
-                plt.xlabel("Spanwise Wavenumber kz")
-                plt.ylabel("Energy Spectrum E(kz)")
-                plt.title("Spanwise Spectrum")
-                plt.grid(True, alpha=0.3)
-
-                # Subplot 3: 2D spectrum heatmap
-                plt.subplot(1, 3, 3)
-                contour = plt.contourf(kx_2d, kz_2d, spectrum_log, levels=50, cmap="viridis")
-                plt.colorbar(contour, label="log₁₀(Energy Spectrum)")
-                plt.xlabel("Streamwise Wavenumber kx")
-                plt.ylabel("Spanwise Wavenumber kz")
-                plt.title("2D Spectrum")
-
-                # Overall title for the figure
-                fig.suptitle(
-                    f"{mode.title()} - Plane {plane_idx} ({field_name.upper()}) - Energy Spectra (y={y_slice})",
-                    fontsize=14,
-                    fontweight="bold",
-                )
-
-                plt.tight_layout()
-
-                # Save combined figure
-                output_path = self.output_dir / f"{base_name}_combined.png"
-                plt.savefig(output_path, dpi=300, bbox_inches="tight")
-                plt.close()
-                print(f"  Saved combined spectrum plot: {output_path}")
-
-        print(f"Energy spectra plotting for {mode} completed.")
-
-    def _run_energy_spectra_analysis(self, num_future: int = 20, sample_idx: int = 0):
-        """
-        Run energy spectra analysis on both autoregressive predictions and ground truth.
-
-        Args:
-            num_future: Number of future steps to generate for analysis (default 50)
-            sample_idx: Index of the sample to analyze
-        """
-        print(f"Generating {num_future} steps for energy spectra analysis...")
-
-        # Get channel info
-        channel_info = self.test_dataset.get_channel_info()
-        field_names = channel_info["field_names"]  # ["u", "v", "w", "p"]
-        y_slices = channel_info["y_slices"]  # [29, 54, 75]
-
-        # Generate autoregressive predictions
-        print("Generating autoregressive predictions...")
-        sample = self.test_dataset[sample_idx]
-        input_seq = sample["data"]["input_seq"].to(self.device)
-
-        # Generate autoregressive predictions
-        pred_frames = self.generate_sequence_prediction(input_seq, num_future)  # (B, T_pred, C, H, W)
-
-        # Denormalize predictions
-        pred_frames_denorm = self.test_dataset.denormalize(pred_frames).cpu().numpy()  # (B, T_pred, C, H, W)
-
-        # Remove batch dimension: (T_pred, C, H, W)
-        pred_frames_array = pred_frames_denorm[0]  # Take first (and only) batch
-
-        # Collect corresponding ground truth frames
-        print("Collecting ground truth frames...")
-        ground_truth_frames = []
-        for i in range(num_future):
-            if sample_idx + i + 1 < len(self.test_dataset):  # +1 because first prediction is t+1
-                gt_sample = self.test_dataset[sample_idx + i + 1]
-                gt_frame = gt_sample["data"]["input_seq"][:, -1:, :, :, :]  # Get last frame
-                gt_frame_denorm = self.test_dataset.denormalize(gt_frame).cpu().numpy()[0, 0]  # (C, H, W)
-                ground_truth_frames.append(gt_frame_denorm)
-            else:
-                # If we run out of ground truth data, duplicate the last frame
-                if ground_truth_frames:
-                    ground_truth_frames.append(ground_truth_frames[-1])
-                else:
-                    # Use a zero frame as fallback
-                    zero_frame = np.zeros_like(pred_frames_array[0])
-                    ground_truth_frames.append(zero_frame)
-
-        # Convert to numpy array: (T, C, H, W)
-        gt_frames_array = np.stack(ground_truth_frames, axis=0)
-
-        print(f"Prediction frames shape: {pred_frames_array.shape}")
-        print(f"Ground truth frames shape: {gt_frames_array.shape}")
-
-        # Verify shapes are consistent
-        assert pred_frames_array.shape == gt_frames_array.shape, (
-            f"Shape mismatch: pred {pred_frames_array.shape} vs gt {gt_frames_array.shape}"
-        )
-
-        # Compute energy spectra for predictions
-        print("\nComputing energy spectra for predictions...")
-        pred_spectra = self._compute_energy_spectra(pred_frames_array, field_names, y_slices, dx=1.0, dz=1.0)
-
-        # Compute energy spectra for ground truth
-        print("\nComputing energy spectra for ground truth...")
-        gt_spectra = self._compute_energy_spectra(gt_frames_array, field_names, y_slices, dx=1.0, dz=1.0)
-
-        # Plot energy spectra
-        print("\nPlotting energy spectra...")
-        self._plot_energy_spectra(pred_spectra, field_names, y_slices, mode="prediction")
-        self._plot_energy_spectra(gt_spectra, field_names, y_slices, mode="ground_truth")
-
-        # Generate comparison plots
-        print("\nGenerating comparison plots...")
-        self._plot_spectra_comparison(pred_spectra, gt_spectra, field_names, y_slices)
-
-        print(f"Energy spectra analysis complete! Results saved to: {self.output_dir}")
-
-    def _plot_spectra_comparison(self, pred_spectra, gt_spectra, field_names, y_slices):
-        """
-        Plot combined comparison between prediction and ground truth spectra.
-
-        Args:
-            pred_spectra: Prediction spectra from _compute_energy_spectra
-            gt_spectra: Ground truth spectra from _compute_energy_spectra
-            field_names: List of field names
-            y_slices: List of y-slice positions
-        """
-        print("Creating combined spectra comparison plots...")
-        num_planes = len(y_slices)
-
-        for plane_idx in range(num_planes):
-            y_slice = y_slices[plane_idx]
-
-            for field_name in field_names:
-                # Extract data
-                pred_data = pred_spectra[f"plane{plane_idx}"]["fields"][field_name]
-                gt_data = gt_spectra[f"plane{plane_idx}"]["fields"][field_name]
-
-                # Create combined figure with 4 subplots
-                fig = plt.figure(figsize=(20, 10))
-
-                # Prepare data for plotting (fix indexing after fftshift)
-                kx = pred_data["kx"]
-                kz = pred_data["kz"]
-                kx_pos = pred_data["kx_pos"]
-                kz_pos = pred_data["kz_pos"]
-
-                # Get positive frequency masks and corresponding spectra
-                kx_pos_mask = kx > 0
-                kz_pos_mask = kz > 0
-
-                pred_spectrum_kx_pos = pred_data["spectrum_kx"][kx_pos_mask]
-                gt_spectrum_kx_pos = gt_data["spectrum_kx"][kx_pos_mask]
-                pred_spectrum_kz_pos = pred_data["spectrum_kz"][kz_pos_mask]
-                gt_spectrum_kz_pos = gt_data["spectrum_kz"][kz_pos_mask]
-
-                # Subplot 1: 1D streamwise spectrum comparison E(kx)
-                plt.subplot(2, 2, 1)
-                plt.loglog(kx_pos, pred_spectrum_kx_pos, "b-", linewidth=2, label="Prediction")
-                plt.loglog(kx_pos, gt_spectrum_kx_pos, "r--", linewidth=2, label="Ground Truth")
-                plt.xlabel("Streamwise Wavenumber kx")
-                plt.ylabel("Energy Spectrum E(kx)")
-                plt.title("Streamwise Spectrum Comparison")
-                plt.legend()
-                plt.grid(True, alpha=0.3)
-
-                # Subplot 2: 1D spanwise spectrum comparison E(kz)
-                plt.subplot(2, 2, 2)
-                plt.loglog(kz_pos, pred_spectrum_kz_pos, "b-", linewidth=2, label="Prediction")
-                plt.loglog(kz_pos, gt_spectrum_kz_pos, "r--", linewidth=2, label="Ground Truth")
-                plt.xlabel("Spanwise Wavenumber kz")
-                plt.ylabel("Energy Spectrum E(kz)")
-                plt.title("Spanwise Spectrum Comparison")
-                plt.legend()
-                plt.grid(True, alpha=0.3)
-
-                # Prepare 2D spectrum data with consistent colorbar scale
-                pred_spectrum_2d = pred_data["spectrum_2d"]
-                gt_spectrum_2d = gt_data["spectrum_2d"]
-
-                # For 2D visualization, apply fftshift to center zero frequency
-                pred_spectrum_2d_shift = np.fft.fftshift(pred_spectrum_2d)
-                gt_spectrum_2d_shift = np.fft.fftshift(gt_spectrum_2d)
-                kx_shift = np.fft.fftshift(kx)
-                kz_shift = np.fft.fftshift(kz)
-
-                # Use log scale for better visualization and find common range
-                pred_spectrum_log = np.log10(pred_spectrum_2d_shift + 1e-12)
-                gt_spectrum_log = np.log10(gt_spectrum_2d_shift + 1e-12)
-
-                # Set consistent color scale
-                vmin = min(np.min(pred_spectrum_log), np.min(gt_spectrum_log))
-                vmax = max(np.max(pred_spectrum_log), np.max(gt_spectrum_log))
-
-                # Create meshgrid for plotting
-                kx_2d, kz_2d = np.meshgrid(kx_shift, kz_shift)
-
-                # Subplot 3: 2D prediction spectrum
-                plt.subplot(2, 2, 3)
-                contour1 = plt.contourf(
-                    kx_2d, kz_2d, pred_spectrum_log, levels=50, cmap="viridis", vmin=vmin, vmax=vmax
-                )
-                plt.colorbar(contour1, label="log₁₀(Energy Spectrum)")
-                plt.xlabel("Streamwise Wavenumber kx")
-                plt.ylabel("Spanwise Wavenumber kz")
-                plt.title("2D Spectrum - Prediction")
-
-                # Subplot 4: 2D ground truth spectrum
-                plt.subplot(2, 2, 4)
-                contour2 = plt.contourf(kx_2d, kz_2d, gt_spectrum_log, levels=50, cmap="viridis", vmin=vmin, vmax=vmax)
-                plt.colorbar(contour2, label="log₁₀(Energy Spectrum)")
-                plt.xlabel("Streamwise Wavenumber kx")
-                plt.ylabel("Spanwise Wavenumber kz")
-                plt.title("2D Spectrum - Ground Truth")
-
-                # Overall title for the figure
-                fig.suptitle(
-                    f"Spectrum Comparison - Plane {plane_idx} ({field_name.upper()}) at y={y_slice}",
-                    fontsize=14,
-                    fontweight="bold",
-                )
-
-                plt.tight_layout()
-
-                # Save combined comparison figure
-                output_path = self.output_dir / f"spectrum_comparison_plane{plane_idx}_{field_name}_combined.png"
-                plt.savefig(output_path, dpi=300, bbox_inches="tight")
-                plt.close()
-                print(f"  Saved combined spectrum comparison: {output_path}")
-
-        print("Combined spectra comparison plots completed.")
+        print("- Individual channel images (3 files per sample: u, v, w)")
+        if create_animation:
+            print("- Animation video (MP4 or GIF): showing temporal evolution of all 3 fields")
+        if run_spectra:
+            print("- Energy spectra plots (streamwise, spanwise, 2D)")
+            print("- Spectra comparison plots (prediction vs ground truth)")
 
 
 def main():
@@ -1650,9 +882,9 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Evaluate 1-plane Flow Swin Transformer")
-    parser.add_argument("--checkpoint_path", type=str, help="Path to model checkpoint")
+    parser.add_argument("checkpoint_path", type=str, nargs="?", help="Path to model checkpoint")
     parser.add_argument("--num_samples", type=int, default=1, help="Number of samples to evaluate")
-    parser.add_argument("--num_future", type=int, default=60, help="Number of future steps to predict")
+    parser.add_argument("--num_future", type=int, default=20, help="Number of future steps to predict")
     parser.add_argument("--save_predictions", action="store_true", help="Save predictions as H5 files")
 
     args = parser.parse_args()
@@ -1667,36 +899,28 @@ def main():
             "runs/2025-11-05_15-18-05-369060/checkpoints/step_1800.ckpt"
         )
 
-    # Load model config from checkpoint
-    import torch
+    # Load model config (simplified for direct usage)
     from omegaconf import OmegaConf
 
-    print("Loading checkpoint to extract model config...")
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-
-    # Try to get model config from checkpoint's hyperparameters
-    if "hyper_parameters" in checkpoint and "cfg" in checkpoint["hyper_parameters"]:
-        # Extract model config from saved hyperparameters
-        cfg = checkpoint["hyper_parameters"]["cfg"]
-        if hasattr(cfg, "model"):
-            model_cfg = cfg.model
-            print("✓ Loaded model config from checkpoint hyperparameters")
-        else:
-            model_cfg = cfg
-            print("✓ Using full config from checkpoint")
-    else:
-        # Fallback: create a minimal config that works for both Swin and LSTM
-        print("⚠ No hyperparameters in checkpoint, using minimal config")
-        model_cfg = OmegaConf.create(
-            {
-                "input_shape": [128, 128],
-                "sequence_length": 5,
-                "prediction_horizon": 1,
-                "num_channels": 12,
-            }
-        )
-
-    print(f"Model config: {OmegaConf.to_yaml(model_cfg)}")
+    # Create a basic model config for 1-plane model (3 channels: 1 plane × 3 fields)
+    model_cfg = OmegaConf.create(
+        {
+            "input_shape": [256, 256],
+            "sequence_length": 5,
+            "prediction_horizon": 1,
+            "num_channels": 3,
+            "patch_size": [4, 4],
+            "embed_dim": 384,
+            "depths": [2, 2, 4, 6, 4, 2, 2],
+            "num_heads": 12,
+            "window_size": [8, 8],
+            "mlp_ratio": 4.0,
+            "qkv_bias": True,
+            "drop_rate": 0.1,
+            "attn_drop_rate": 0.1,
+            "drop_path_rate": 0.1,
+        }
+    )
 
     # Create evaluator and run evaluation
     evaluator = OnePlaneModelEvaluator(

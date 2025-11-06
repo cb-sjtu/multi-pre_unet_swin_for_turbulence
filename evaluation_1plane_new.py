@@ -10,7 +10,7 @@ This script adopts the modular architecture from evaluation_new.py for 1-plane m
 
 Key Features:
 1. Modular and extensible design
-2. 1-plane specific visualizations (3-channel support)
+2. 1-plane specific visualizations (3-channel support for u, v, w)
 3. Proper WandB integration without step conflicts
 4. Multi-modal visualization (plots + videos)
 """
@@ -43,26 +43,29 @@ warnings.filterwarnings("ignore")
 # ========================================
 # 🎯 CONFIGURATION: Modify this value to change prediction length everywhere
 # ========================================
-DEFAULT_FUTURE_STEPS = 100  # Number of future steps to predict for 1-plane
+DEFAULT_FUTURE_STEPS = 50  # Number of future steps to predict for 1-plane
 
 
 def create_1plane_monitor_points():
-    """Create 1-plane specific monitoring points - 9 points total (1 plane × 9 positions)."""
-    # Monitoring points for 256x256 domain (indices 0-255)
-    positions = [
-        (64, 64),  # Lower-left region
-        (64, 128),  # Lower-center
-        (64, 192),  # Lower-right
-        (128, 64),  # Center-left
-        (128, 128),  # Center-center
-        (128, 192),  # Center-right
-        (192, 64),  # Upper-left
-        (192, 128),  # Upper-center
-        (192, 192),  # Upper-right
+    """Create 1-plane specific monitoring points - 9 points total (single plane × 9 positions)."""
+    # Base 2D positions in the domain (z_index, x_index)
+    base_positions = [
+        # Adjusted monitoring points for 128x128 domain (indices 0-127)
+        (40, 40),  # Bottom-left region
+        (40, 64),  # Bottom-center
+        (40, 100),  # Bottom-right
+        (64, 40),  # Center-left
+        (64, 64),  # Center-center
+        (64, 100),  # Center-right
+        (100, 40),  # Top-left
+        (100, 64),  # Top-center
+        (100, 100),  # Top-right
     ]
 
-    # For 1-plane, format is (z_idx, x_idx) - no plane index needed
-    return positions
+    # For 1-plane, we directly use the 2D positions: (z_idx, x_idx)
+    custom_points = base_positions
+
+    return custom_points
 
 
 def run_comprehensive_1plane_evaluation(
@@ -118,7 +121,7 @@ def run_comprehensive_1plane_evaluation(
 
         # Evaluate samples from test set
         print(f"\n{'=' * 60}")
-        print("🔍 3-PLANE EVALUATION PHASE")
+        print("🔍 1-PLANE EVALUATION PHASE")
         print(f"{'=' * 60}")
 
         dataset_splits = ["test"]  # Can extend to ["train", "val", "test"]
@@ -135,7 +138,7 @@ def run_comprehensive_1plane_evaluation(
 
         # Create comprehensive 1-plane analysis
         print(f"\n{'=' * 60}")
-        print("📈 3-PLANE ANALYSIS PHASE")
+        print("📈 1-PLANE ANALYSIS PHASE")
         print(f"{'=' * 60}")
 
         evaluator.create_comprehensive_1plane_analysis()
@@ -149,7 +152,7 @@ def run_comprehensive_1plane_evaluation(
 
         # Final summary
         print(f"\n{'=' * 70}")
-        print("✅ 3-PLANE EVALUATION COMPLETED SUCCESSFULLY!")
+        print("✅ 1-PLANE EVALUATION COMPLETED SUCCESSFULLY!")
         print(f"{'=' * 70}")
         print(f"📁 Results saved to: {evaluator.output_dir}")
         print(f"📈 Time series plots: {plots_dir}")
@@ -158,7 +161,7 @@ def run_comprehensive_1plane_evaluation(
         if save_predictions:
             print(f"💾 Predictions saved to: {evaluator.predictions_dir}")
 
-        print("\n📋 3-Plane Summary:")
+        print("\n📋 1-Plane Summary:")
         print(f"  - Evaluated {num_samples} samples from test set")
         print(f"  - Monitored {len(monitor_points)} 1-plane points")
         print(f"  - Generated {num_future_steps} future steps per sample")
@@ -166,7 +169,7 @@ def run_comprehensive_1plane_evaluation(
         print("  - Created comprehensive 1-plane metrics and visualizations")
 
     except Exception as e:
-        print(f"\n❌ 3-Plane evaluation failed: {str(e)}")
+        print(f"\n❌ 1-Plane evaluation failed: {str(e)}")
         raise
 
     finally:
@@ -179,7 +182,7 @@ def run_comprehensive_1plane_evaluation(
 
 def main() -> None:
     """Main function with command line interface."""
-    parser = argparse.ArgumentParser(description="Modular 3-Plane Flow Model Evaluation")
+    parser = argparse.ArgumentParser(description="Modular 1-Plane Flow Model Evaluation")
 
     parser.add_argument("checkpoint_path", nargs="?", default=None, help="Path to model checkpoint")
 
@@ -210,7 +213,7 @@ def main() -> None:
     if args.checkpoint_path is None:
         args.checkpoint_path = (
             "/home/sh/CB/icon-thewell-dev/logs/flow_fno_1plane/"
-            "runs/2025-10-27_22-56-39-791052/checkpoints/step_27000.ckpt"
+            "runs/2025-11-05_15-18-05-369060/checkpoints/step_1800.ckpt"
         )
         print(f"Using default checkpoint: {args.checkpoint_path}")
 
