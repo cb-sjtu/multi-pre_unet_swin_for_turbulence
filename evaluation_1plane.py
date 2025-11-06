@@ -567,7 +567,7 @@ class OnePlaneModelEvaluator:
 
         print(f"Energy spectra plotting for {mode} completed.")
 
-    def _run_energy_spectra_analysis(self, num_future: int = 40, sample_idx: int = 0):
+    def _run_energy_spectra_analysis(self, num_future: int = 50, sample_idx: int = 0):
         """
         Run energy spectra analysis on predictions and ground truth for 1 plane.
 
@@ -845,7 +845,7 @@ class OnePlaneModelEvaluator:
             print("\n" + "=" * 60)
             print("ENERGY SPECTRA ANALYSIS")
             print("=" * 60)
-            self._run_energy_spectra_analysis(num_future=20, sample_idx=0)
+            self._run_energy_spectra_analysis(num_future=50, sample_idx=0)
 
         print(f"\nEvaluation complete! Results saved to: {self.output_dir}")
         print("\nGenerated visualizations:")
@@ -864,7 +864,7 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate 1-plane Flow Swin Transformer")
     parser.add_argument("checkpoint_path", type=str, nargs="?", help="Path to model checkpoint")
     parser.add_argument("--num_samples", type=int, default=1, help="Number of samples to evaluate")
-    parser.add_argument("--num_future", type=int, default=60, help="Number of future steps to predict")
+    parser.add_argument("--num_future", type=int, default=50, help="Number of future steps to predict")
     parser.add_argument("--save_predictions", action="store_true", help="Save predictions as H5 files")
 
     args = parser.parse_args()

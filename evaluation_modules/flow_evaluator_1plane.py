@@ -170,6 +170,7 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
             "data_dir": data_dir,
             "input_length": 5,  # Match 1-plane training
             "max_k_steps": 100,  # Load multiple GT steps for comparison
+            "prediction_step_size": 1,  # Single-step prediction for discontinuity filtering
             "field_names": self.field_names,  # ["u", "v", "w"]
             "file_pattern": "*u-v-w_scale2-3-1_yslice54*.h5",
             "resolution_scale": [2, 3, 1],
