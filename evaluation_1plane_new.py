@@ -51,15 +51,16 @@ def create_1plane_monitor_points():
     # Monitoring points for 256x256 domain (indices 0-255)
     custom_points = [
         # Single plane: (0, z_index, x_index)
-        (0, 80, 80),  # Bottom-left region
-        (0, 80, 128),  # Bottom-center
-        (0, 80, 200),  # Bottom-right
-        (0, 128, 80),  # Center-left
-        (0, 128, 128),  # Center-center
-        (0, 128, 200),  # Center-right
-        (0, 200, 80),  # Top-left
-        (0, 200, 128),  # Top-center
-        (0, 200, 200),  # Top-right
+        # Adjusted monitoring points for 128x128 domain (indices 0-127)
+        (40, 40),  # Bottom-left region
+        (40, 64),  # Bottom-center
+        (40, 100),  # Bottom-right
+        (64, 40),  # Center-left
+        (64, 64),  # Center-center
+        (64, 100),  # Center-right
+        (100, 40),  # Top-left
+        (100, 64),  # Top-center
+        (100, 100),  # Top-right
     ]
 
     return custom_points
@@ -210,7 +211,7 @@ def main() -> None:
     if args.checkpoint_path is None:
         args.checkpoint_path = (
             "/home/sh/CB/icon-thewell-dev/logs/flow_lstm_1plane/"
-            "runs/2025-11-05_20-32-55-526491/checkpoints/step_600.ckpt"
+            "runs/2025-11-05_20-32-55-526491/checkpoints/step_19200.ckpt"
         )
         print(f"Using default checkpoint: {args.checkpoint_path}")
 

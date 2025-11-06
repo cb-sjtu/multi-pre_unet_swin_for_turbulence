@@ -284,6 +284,15 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
                 if gt_frame is not None:
                     gt_frame_denorm = dataset.denormalize(gt_frame.unsqueeze(0))[0].cpu()  # (C, H, W)
 
+                # Debug: Check if prediction equals GT at monitoring point (64, 64)
+                if step < 3:  # Only for first 3 steps
+                    pred_val = pred_frame_denorm[0, 64, 64].item()
+                    gt_val = gt_frame_denorm[0, 64, 64].item() if gt_frame_denorm is not None else None
+                    gt_str = f"{gt_val:.6f}" if gt_val is not None else "N/A"
+                    print(f"    [AR DEBUG] Step {step}: pred[0,64,64]={pred_val:.6f}, gt[0,64,64]={gt_str}")
+                    if gt_val is not None and abs(pred_val - gt_val) < 1e-5:
+                        print(f"    ⚠️  WARNING: AR prediction equals GT at step {step}!")
+
                 self.record_timestep_data(pred_frame_denorm, split, "ar", step, gt_frame_denorm)
 
                 # Update sequence for next prediction
@@ -340,6 +349,15 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
                 if step < len(ground_truth_frames):
                     gt_frame = ground_truth_frames[step]
                     gt_frame_denorm = dataset.denormalize(gt_frame.unsqueeze(0))[0].cpu()
+
+                # Debug: Check if prediction equals GT at monitoring point (64, 64)
+                if step < 3:  # Only for first 3 steps
+                    pred_val = pred_frame_denorm[0, 64, 64].item()
+                    gt_val = gt_frame_denorm[0, 64, 64].item() if gt_frame_denorm is not None else None
+                    gt_str = f"{gt_val:.6f}" if gt_val is not None else "N/A"
+                    print(f"    [TF DEBUG] Step {step}: pred[0,64,64]={pred_val:.6f}, gt[0,64,64]={gt_str}")
+                    if gt_val is not None and abs(pred_val - gt_val) < 1e-5:
+                        print(f"    ⚠️  WARNING: TF prediction equals GT at step {step}!")
 
                 # Record for time series monitoring
                 self.record_timestep_data(pred_frame_denorm, split, "tf", step, gt_frame_denorm)
@@ -462,8 +480,15 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
 
             point_values = {"u": [], "v": [], "w": []}
 
-            for _plane_idx, z_idx, x_idx in monitor.monitor_points:
-                # For 1-plane, plane_idx should always be 0
+            for point in monitor.monitor_points:
+                # For 1-plane, monitor_points format is (z_idx, x_idx)
+                if len(point) == 3:
+                    _plane_idx, z_idx, x_idx = point
+                elif len(point) == 2:
+                    z_idx, x_idx = point
+                else:
+                    raise ValueError(f"Invalid monitor point format: {point}")
+
                 # Channel mapping: u=0, v=1, w=2
                 u_channel = 0
                 v_channel = 1
