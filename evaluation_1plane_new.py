@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Modular evaluation script for 1-plane Flow LSTM model.
+New modular evaluation script for 1-plane Flow Swin Transformer.
 
-This script adopts the modular architecture for 1-plane models:
-- Single y-plane (yslice54) with 3 channels (u, v, w)
-- Resolution 256×256
-- Modular and extensible design
-- Proper WandB integration
+This script adopts the modular architecture from evaluation_new.py for 1-plane models:
+- Separated concerns into different modules
+- Added comprehensive 1-plane visualization
+- Improved code organization and maintainability
+- Fixed WandB step counting issues
 
 Key Features:
-1. Modular evaluation design
-2. 1-plane specific visualizations (3-channel support)
-3. Proper WandB integration
+1. Modular and extensible design
+2. 1-plane specific visualizations (3-channel support for u, v, w)
+3. Proper WandB integration without step conflicts
 4. Multi-modal visualization (plots + videos)
 """
 
@@ -43,14 +43,13 @@ warnings.filterwarnings("ignore")
 # ========================================
 # 🎯 CONFIGURATION: Modify this value to change prediction length everywhere
 # ========================================
-DEFAULT_FUTURE_STEPS = 100  # Number of future steps to predict for 1-plane
+DEFAULT_FUTURE_STEPS = 50  # Number of future steps to predict for 1-plane
 
 
 def create_1plane_monitor_points():
-    """Create 1-plane specific monitoring points - 9 points total for single plane."""
-    # Monitoring points for 256x256 domain (indices 0-255)
-    custom_points = [
-        # Single plane: (0, z_index, x_index)
+    """Create 1-plane specific monitoring points - 9 points total (single plane × 9 positions)."""
+    # Base 2D positions in the domain (z_index, x_index)
+    base_positions = [
         # Adjusted monitoring points for 128x128 domain (indices 0-127)
         (40, 40),  # Bottom-left region
         (40, 64),  # Bottom-center
@@ -62,6 +61,9 @@ def create_1plane_monitor_points():
         (100, 64),  # Top-center
         (100, 100),  # Top-right
     ]
+
+    # For 1-plane, we directly use the 2D positions: (z_idx, x_idx)
+    custom_points = base_positions
 
     return custom_points
 
@@ -98,7 +100,7 @@ def run_comprehensive_1plane_evaluation(
         monitor_points = create_1plane_monitor_points()
         print(f"Using {len(monitor_points)} custom 1-plane monitoring points")
     else:
-        # Use default points for 256x256 resolution
+        # Assume 1-plane data uses similar spatial dimensions
         monitor_points = get_default_monitor_points((256, 256))
         print(f"Using {len(monitor_points)} default monitoring points")
 
@@ -141,7 +143,7 @@ def run_comprehensive_1plane_evaluation(
 
         evaluator.create_comprehensive_1plane_analysis()
 
-        # Create time series analysis
+        # Create time series analysis (similar to evaluation_new.py)
         print(f"\n{'=' * 60}")
         print("📊 TIME SERIES ANALYSIS")
         print(f"{'=' * 60}")
@@ -227,7 +229,7 @@ def main() -> None:
     if HYDRA_AVAILABLE:
         try:
             with hydra.initialize(version_base="1.3", config_path="configs"):
-                hydra.compose(config_name="train_flow_lstm_1plane", overrides=args.config_overrides)
+                hydra.compose(config_name="train_flow_swin_1plane", overrides=args.config_overrides)
 
                 # Run evaluation
                 run_comprehensive_1plane_evaluation(

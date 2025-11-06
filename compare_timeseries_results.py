@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-多模型时间序列对比程序
+多模型时间序列对比程序 - 1平面3通道版本
 
-用于对比不同模型在相同采样点的时间序列预测结果。
+用于对比不同模型在相同采样点的时间序列预测结果（1-plane, 3-channel: u, v, w）。
 支持 Teacher Forcing (TF) 和 Autoregressive (AR) 两种模式。
 
 Usage:
     python compare_timeseries_results.py \
-        logs/flow_fno_3plane/runs/2025-10-27_22-56-39-791052 \
-        logs/flow_lstm_3plane/runs/2025-10-26_12-14-53-336652 \
-        logs/flow_swin_3plane/runs/2025-09-22_11-09-35-088845 \
+        logs/flow_fno_1plane/runs/2025-10-27_22-56-39-791052 \
+        logs/flow_lstm_1plane/runs/2025-10-26_12-14-53-336652 \
+        logs/flow_swin_1plane/runs/2025-09-22_11-09-35-088845 \
         --model-names "FNO" "LSTM" "Swin" \
         --output-dir timeseries_comparison_results
 """
@@ -61,10 +61,10 @@ class TimeSeriesComparator:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # 字段和平面配置
-        self.fields = ["u", "v", "w", "p"]
-        self.planes = [0, 1, 2]
-        self.plane_y_positions = {0: 29, 1: 54, 2: 75}
+        # 字段配置 - 1平面3通道：u, v, w (无pressure)
+        self.fields = ["u", "v", "w"]
+        # 1平面模型没有多个plane，只有单个y切片
+        self.y_slice = 54  # 固定的y切片位置
 
         print("初始化时间序列对比器")
         print(f"  模型数量: {len(self.model_names)}")
@@ -99,12 +99,12 @@ class TimeSeriesComparator:
 
     def parse_column_name(self, col_name):
         """
-        解析列名，提取字段、点号、平面等信息
+        解析列名，提取字段、点号、位置等信息（1平面格式）
 
-        Example: 'u_pred_point0_plane0_y29_z40_x40' ->
-            {'field': 'u', 'type': 'pred', 'point': 0, 'plane': 0, 'y': 29, 'z': 40, 'x': 40}
+        Example: 'u_pred_point0_y54_z40_x40' ->
+            {'field': 'u', 'type': 'pred', 'point': 0, 'y': 54, 'z': 40, 'x': 40}
         """
-        pattern = r"([uvwp])_(pred|gt)_point(\d+)_plane(\d+)_y(\d+)_z(\d+)_x(\d+)"
+        pattern = r"([uvw])_(pred|gt)_point(\d+)_y(\d+)_z(\d+)_x(\d+)"
         match = re.match(pattern, col_name)
 
         if not match:
@@ -114,15 +114,14 @@ class TimeSeriesComparator:
             "field": match.group(1),
             "type": match.group(2),
             "point": int(match.group(3)),
-            "plane": int(match.group(4)),
-            "y": int(match.group(5)),
-            "z": int(match.group(6)),
-            "x": int(match.group(7)),
+            "y": int(match.group(4)),
+            "z": int(match.group(5)),
+            "x": int(match.group(6)),
         }
 
     def get_point_info_list(self, df):
         """
-        从DataFrame中提取所有采样点信息
+        从DataFrame中提取所有采样点信息（1平面格式）
 
         Returns:
             list of dict: 每个点的信息
@@ -136,31 +135,28 @@ class TimeSeriesComparator:
 
             info = self.parse_column_name(col)
             if info and info["type"] == "pred":  # 只处理预测列
-                point_key = (info["point"], info["plane"], info["y"], info["z"], info["x"])
+                point_key = (info["point"], info["y"], info["z"], info["x"])
                 if point_key not in seen_points:
-                    point_info_list.append(
-                        {"point": info["point"], "plane": info["plane"], "y": info["y"], "z": info["z"], "x": info["x"]}
-                    )
+                    point_info_list.append({"point": info["point"], "y": info["y"], "z": info["z"], "x": info["x"]})
                     seen_points.add(point_key)
 
         return sorted(point_info_list, key=lambda x: x["point"])
 
     def compare_point_timeseries(self, point_info, mode="tf"):
         """
-        对比指定采样点的所有字段的时间序列
+        对比指定采样点的所有字段的时间序列（1平面格式）
 
         Args:
             point_info: 点信息字典
             mode: 'tf' 或 'ar'
         """
         point = point_info["point"]
-        plane = point_info["plane"]
         y = point_info["y"]
         z = point_info["z"]
         x = point_info["x"]
 
         mode_name = "Teacher Forcing" if mode == "tf" else "Autoregressive"
-        print(f"\n对比点 {point} (Plane{plane}, y={y}, z={z}, x={x}) - {mode_name}")
+        print(f"\n对比点 {point} (y={y}, z={z}, x={x}) - {mode_name}")
 
         # 加载所有模型的数据
         dfs = []
@@ -173,8 +169,8 @@ class TimeSeriesComparator:
             print("  ⚠ 无有效数据，跳过")
             return
 
-        # 创建子图：4个字段 (u, v, w, p)
-        fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+        # 创建子图：3个字段 (u, v, w) - 1行3列布局
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
         axes = axes.flatten()
 
         # 为每个模型分配颜色，Swin使用红色
@@ -189,8 +185,8 @@ class TimeSeriesComparator:
         for field_idx, field in enumerate(self.fields):
             ax = axes[field_idx]
 
-            # 构造列名
-            gt_col = f"{field}_gt_point{point}_plane{plane}_y{y}_z{z}_x{x}"
+            # 构造列名 (1平面格式: field_pred/gt_point#_y#_z#_x#)
+            gt_col = f"{field}_gt_point{point}_y{y}_z{z}_x{x}"
 
             # 首先绘制 Ground Truth（从第一个有效数据中读取）
             gt_data = None
@@ -217,7 +213,7 @@ class TimeSeriesComparator:
                 if df is None:
                     continue
 
-                pred_col = f"{field}_pred_point{point}_plane{plane}_y{y}_z{z}_x{x}"
+                pred_col = f"{field}_pred_point{point}_y{y}_z{z}_x{x}"
 
                 if pred_col in df.columns:
                     pred_data = df[pred_col].values
@@ -248,14 +244,14 @@ class TimeSeriesComparator:
             ax.grid(True, alpha=0.3, linestyle=":")
 
         plt.suptitle(
-            f"Time Series Comparison - Point{point} (Plane{plane}, y={y}, z={z}, x={x})\nMode: {mode_name}",
+            f"Time Series Comparison - Point{point} (y={y}, z={z}, x={x})\nMode: {mode_name}",
             fontsize=14,
             fontweight="bold",
         )
         plt.tight_layout()
 
-        # 保存图片
-        output_file = self.output_dir / f"timeseries_point{point}_plane{plane}_y{y}_z{z}_x{x}_{mode}.png"
+        # 保存图片 (1平面格式: point#_y#_z#_x#)
+        output_file = self.output_dir / f"timeseries_point{point}_y{y}_z{z}_x{x}_{mode}.png"
         plt.savefig(output_file, dpi=150, bbox_inches="tight")
         plt.close()
 
@@ -328,19 +324,19 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例用法:
-  # 对比三个模型的时间序列（TF和AR模式）
+  # 对比三个1平面模型的时间序列（TF和AR模式）
   python compare_timeseries_results.py \\
-      logs/flow_fno_3plane/runs/2025-10-27_22-56-39-791052 \\
-      logs/flow_lstm_3plane/runs/2025-10-26_12-14-53-336652 \\
-      logs/flow_swin_3plane/runs/2025-09-22_11-09-35-088845 \\
+      logs/flow_fno_1plane/runs/2025-10-27_22-56-39-791052 \\
+      logs/flow_lstm_1plane/runs/2025-10-26_12-14-53-336652 \\
+      logs/flow_swin_1plane/runs/2025-09-22_11-09-35-088845 \\
       --model-names "FNO" "LSTM" "Swin"
 
   # 只对比特定的点
   python compare_timeseries_results.py \\
-      logs/flow_fno_3plane/runs/xxx \\
-      logs/flow_lstm_3plane/runs/yyy \\
+      logs/flow_fno_1plane/runs/xxx \\
+      logs/flow_lstm_1plane/runs/yyy \\
       --model-names "FNO" "LSTM" \\
-      --points 0 9 18
+      --points 0 4 8
 
   # 只对比 Teacher Forcing 模式
   python compare_timeseries_results.py \\

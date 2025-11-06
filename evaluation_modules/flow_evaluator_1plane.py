@@ -2,7 +2,7 @@
 """
 1-Plane Flow Evaluator implementation with modular design.
 
-This extends the modular evaluation architecture to support 1-plane 3-channel models.
+This extends the modular evaluation architecture to support 1-plane 3-channel models (uvw).
 Inherits from BaseFlowEvaluator and adds 1-plane specific functionality.
 """
 
@@ -41,9 +41,9 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
     1-Plane Flow Model Evaluator with modular design.
 
     This evaluator provides:
-    - 1-plane specific visualization (3-channel support)
+    - 1-plane specific visualization (3-channel support for u, v, w)
     - Proper WandB integration with step handling
-    - Single-plane analysis
+    - Single plane analysis
     - Video generation for 1-plane data
     """
 
@@ -80,16 +80,16 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
 
         # 1-plane specific configuration
         self.num_planes = 1
-        self.num_fields_per_plane = 3  # u, v, w (no pressure)
+        self.num_fields_per_plane = 3  # u, v, w
         self.total_channels = self.num_planes * self.num_fields_per_plane  # 3
-        self.plane_y_position = 54  # y-slice position for single plane
+        self.plane_y_position = 54  # y-slice position
         self.field_names = ["u", "v", "w"]
 
         # Flow-specific configuration
         self.channel_names = self.field_names
         self.input_length = 5  # Will be updated from dataset
 
-        # Override time monitor with 1-plane specific one (no pressure field)
+        # Override time monitor with 1-plane specific one
         self.time_monitor = self._create_1plane_time_monitor(monitor_points)
 
         print("Initialized 1-plane evaluator:")
@@ -102,7 +102,7 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
         """Load model and datasets for 1-plane evaluation."""
         print("Loading 1-plane model and datasets...")
 
-        # Load model using the same method as 3-plane evaluator
+        # Load model using the same method as original evaluation.py
         self.model = self._load_model()
 
         # Move to GPU if available
@@ -120,7 +120,7 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
             print(f"Input length: {self.input_length}")
 
     def _load_model(self):
-        """Load the model from checkpoint."""
+        """Load the model from checkpoint (adapted from original evaluation.py)."""
         print(f"Loading 1-plane model from {self.checkpoint_path}")
 
         # Load checkpoint
@@ -130,9 +130,10 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
         if "hyper_parameters" in checkpoint:
             print("Found hyperparameters in checkpoint")
         else:
+            # Use default parameters based on config
             print("Using default parameters")
 
-        # Load the full Lightning module
+        # Load the full Lightning module instead of just the base model
         print("Loading full Lightning module from checkpoint...")
         from src.plmodules.flow_swin_2d_lit_module import FlowSwin2DLitModule
 
@@ -159,7 +160,7 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
         return model
 
     def _load_datasets(self):
-        """Load 1-plane specific datasets."""
+        """Load 1-plane specific datasets (adapted from original evaluation.py)."""
         from src.datasets.flow_sequence_2d.flow_sequence_1plane import FlowSequence1PlaneDataset
 
         data_dir = "/home/sh/CB/icon-thewell-dev/data/preprocessed_flow"
@@ -169,13 +170,14 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
             "data_dir": data_dir,
             "input_length": 5,  # Match 1-plane training
             "max_k_steps": 100,  # Load multiple GT steps for comparison
+            "prediction_step_size": 1,  # Single-step prediction for discontinuity filtering
             "field_names": self.field_names,  # ["u", "v", "w"]
-            "file_pattern": "*u-v-w_scale2-3-1_yslice54_*.h5",
-            "resolution_scale": (2, 3, 1),
+            "file_pattern": "*u-v-w_scale2-3-1_yslice54*.h5",
+            "resolution_scale": [2, 3, 1],
             "y_slice": self.plane_y_position,  # 54
-            "train_ratio": 0.9,
-            "valid_ratio": 0.05,
-            "test_ratio": 0.05,
+            "train_ratio": 0.7,
+            "valid_ratio": 0.15,
+            "test_ratio": 0.15,
             "norm_stats": "norm_stats_3ch_1plane_u-v-w_scale2-3-1_yslice54.json",
             "enable_normalization": True,
         }
@@ -197,12 +199,11 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
             f"Dataset sizes - Train: {len(self.train_dataset)}, "
             f"Val: {len(self.val_dataset)}, Test: {len(self.test_dataset)}"
         )
-        channel_info = self.test_dataset.get_channel_info()
-        print(f"Channel info: {channel_info['num_channels']} total channels")
+        print(f"Channel info: {self.test_dataset.get_channel_info()['num_channels']} total channels")
 
     def evaluate_1plane_sample(self, sample_idx: int, split: str = "test", num_future: int = 10):
         """
-        Evaluate a single sample with 1-plane specific analysis.
+        Evaluate a single sample with 1-plane specific analysis (adapted from 2D evaluator).
 
         Args:
             sample_idx: Index of sample to evaluate
@@ -242,15 +243,32 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
             ground_truth_frames = [target_seq[i] for i in range(available_gt_steps)]
             print(f"  Available ground truth steps: {available_gt_steps}")
 
+            # Debug: print first GT frame info
+            if ground_truth_frames:
+                # Get first GT frame and denormalize it
+                first_gt_normalized = ground_truth_frames[0]  # (C, H, W)
+                first_gt_denorm = dataset.denormalize(first_gt_normalized.unsqueeze(0))[0].cpu()  # (C, H, W)
+
+                # Calculate the actual timestep for first GT
+                base_idx = dataset.indices[sample_idx]
+                # First GT corresponds to: base_idx + input_length * time_stride
+                first_gt_timestep_idx = base_idx + dataset.input_length * dataset.time_stride
+                first_gt_timestep = dataset.timesteps[first_gt_timestep_idx]
+
+                print(f"  [DEBUG] Sample idx: {sample_idx}")
+                print(f"  [DEBUG] First GT timestep: {first_gt_timestep}")
+                print(f"  [DEBUG] First GT value at point (64,64), channel 0: {first_gt_denorm[0, 64, 64]:.6f}")
+                print(f"  [DEBUG] GT shape: {first_gt_denorm.shape}")
+
         print(f"  Input sequence shape: {input_seq.shape}")
         print(f"  Predicting {num_future} future steps...")
 
-        # Run evaluations
+        # Run evaluations (similar to 2D evaluator)
         self._evaluate_1plane_autoregressive(input_seq, ground_truth_frames, sample_idx, split, num_future)
         self._evaluate_1plane_teacher_forcing(input_seq, ground_truth_frames, sample_idx, split, num_future)
 
     def _evaluate_1plane_autoregressive(self, input_seq, ground_truth_frames, sample_idx, split, num_future):
-        """Evaluate using autoregressive prediction."""
+        """Evaluate using autoregressive prediction (adapted from 2D evaluator)."""
         print("  🔄 1-Plane Autoregressive evaluation...")
 
         # Get the appropriate dataset for denormalization
@@ -284,15 +302,6 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
                 if gt_frame is not None:
                     gt_frame_denorm = dataset.denormalize(gt_frame.unsqueeze(0))[0].cpu()  # (C, H, W)
 
-                # Debug: Check if prediction equals GT at monitoring point (64, 64)
-                if step < 3:  # Only for first 3 steps
-                    pred_val = pred_frame_denorm[0, 64, 64].item()
-                    gt_val = gt_frame_denorm[0, 64, 64].item() if gt_frame_denorm is not None else None
-                    gt_str = f"{gt_val:.6f}" if gt_val is not None else "N/A"
-                    print(f"    [AR DEBUG] Step {step}: pred[0,64,64]={pred_val:.6f}, gt[0,64,64]={gt_str}")
-                    if gt_val is not None and abs(pred_val - gt_val) < 1e-5:
-                        print(f"    ⚠️  WARNING: AR prediction equals GT at step {step}!")
-
                 self.record_timestep_data(pred_frame_denorm, split, "ar", step, gt_frame_denorm)
 
                 # Update sequence for next prediction
@@ -317,7 +326,7 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
             )
 
     def _evaluate_1plane_teacher_forcing(self, input_seq, ground_truth_frames, sample_idx, split, num_future):
-        """Evaluate using teacher forcing."""
+        """Evaluate using teacher forcing (adapted from 2D evaluator)."""
         print("  📖 1-Plane Teacher forcing evaluation...")
 
         # Get the appropriate dataset for denormalization
@@ -350,15 +359,6 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
                     gt_frame = ground_truth_frames[step]
                     gt_frame_denorm = dataset.denormalize(gt_frame.unsqueeze(0))[0].cpu()
 
-                # Debug: Check if prediction equals GT at monitoring point (64, 64)
-                if step < 3:  # Only for first 3 steps
-                    pred_val = pred_frame_denorm[0, 64, 64].item()
-                    gt_val = gt_frame_denorm[0, 64, 64].item() if gt_frame_denorm is not None else None
-                    gt_str = f"{gt_val:.6f}" if gt_val is not None else "N/A"
-                    print(f"    [TF DEBUG] Step {step}: pred[0,64,64]={pred_val:.6f}, gt[0,64,64]={gt_str}")
-                    if gt_val is not None and abs(pred_val - gt_val) < 1e-5:
-                        print(f"    ⚠️  WARNING: TF prediction equals GT at step {step}!")
-
                 # Record for time series monitoring
                 self.record_timestep_data(pred_frame_denorm, split, "tf", step, gt_frame_denorm)
 
@@ -370,7 +370,7 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
                     input_seq = torch.cat([input_seq[:, 1:], gt_frame_next], dim=1)
 
     def create_time_series_summary(self):
-        """Create comprehensive time series analysis."""
+        """Create comprehensive time series analysis (adapted from 2D evaluator)."""
         print("\n📈 Creating 1-plane time series analysis...")
 
         # Generate all plots
@@ -408,22 +408,21 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
             f.write("- `timestep`: Time step number\n")
 
             # Generate column descriptions for all channels
-            for i, (point_plane_idx, z, x) in enumerate(self.time_monitor.monitor_points):
-                y_pos = self.plane_y_position
+            for i, (z, x) in enumerate(self.time_monitor.monitor_points):
                 for field_name in self.field_names:
                     f.write(
-                        f"- `{field_name}_pred_point{i}_plane{point_plane_idx}_y{y_pos}_z{z}_x{x}`: "
-                        f"{field_name.upper()} prediction at plane {point_plane_idx} (y={y_pos}) point ({z}, {x})\n"
+                        f"- `{field_name}_pred_point{i}_y{self.plane_y_position}_z{z}_x{x}`: "
+                        f"{field_name.upper()} prediction at y={self.plane_y_position} point ({z}, {x})\n"
                     )
                     f.write(
-                        f"- `{field_name}_gt_point{i}_plane{point_plane_idx}_y{y_pos}_z{z}_x{x}`: "
-                        f"{field_name.upper()} ground truth at plane {point_plane_idx} (y={y_pos}) point ({z}, {x})\n"
+                        f"- `{field_name}_gt_point{i}_y{self.plane_y_position}_z{z}_x{x}`: "
+                        f"{field_name.upper()} ground truth at y={self.plane_y_position} point ({z}, {x})\n"
                     )
 
         print(f"📄 1-Plane monitoring report saved: {report_path}")
 
     def _create_1plane_time_monitor(self, monitor_points):
-        """Create a 1-plane specific time series monitor (u, v, w only, no pressure)."""
+        """Create a 1-plane specific time series monitor."""
         import matplotlib.pyplot as plt
         import numpy as np
 
@@ -432,7 +431,6 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
         # Create a custom monitor for 1-plane data
         monitor = TimeSeriesMonitor(monitor_points)
 
-        # Monkey-patch the monitor for 1-plane (3 channels: u, v, w)
         def patched_record_timestep(pred_data, split, mode, timestep, gt_data=None):
             # Only record data from the first sample (when timesteps array is small)
             max_recorded_steps = len(monitor.time_series_data[split][mode]["timesteps"])
@@ -448,7 +446,7 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
             if timestep not in monitor.time_series_data[split][mode]["timesteps"]:
                 monitor.time_series_data[split][mode]["timesteps"].append(timestep)
 
-            # Record prediction values for each point (only u, v, w for 1-plane)
+            # Record prediction values for each point
             for component in ["u", "v", "w"]:
                 for i, value in enumerate(pred_values[component]):
                     monitor.time_series_data[split][mode][f"{component}_pred"][i].append(value)
@@ -476,27 +474,16 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
             )
 
             # Extract u, v, w from 3-channel 1-plane data
-            # Channels: 0=u, 1=v, 2=w
+            # Channels 0-2: u, v, w
 
             point_values = {"u": [], "v": [], "w": []}
 
-            for point in monitor.monitor_points:
-                # For 1-plane, monitor_points format is (z_idx, x_idx)
-                if len(point) == 3:
-                    _plane_idx, z_idx, x_idx = point
-                elif len(point) == 2:
-                    z_idx, x_idx = point
-                else:
-                    raise ValueError(f"Invalid monitor point format: {point}")
-
+            for z_idx, x_idx in monitor.monitor_points:
+                # Extract values from the single plane
                 # Channel mapping: u=0, v=1, w=2
-                u_channel = 0
-                v_channel = 1
-                w_channel = 2
-
-                u_val = flow_data[u_channel, z_idx, x_idx].item()
-                v_val = flow_data[v_channel, z_idx, x_idx].item()
-                w_val = flow_data[w_channel, z_idx, x_idx].item()
+                u_val = flow_data[0, z_idx, x_idx].item()
+                v_val = flow_data[1, z_idx, x_idx].item()
+                w_val = flow_data[2, z_idx, x_idx].item()
 
                 point_values["u"].append(u_val)
                 point_values["v"].append(v_val)
@@ -508,7 +495,6 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
         monitor.record_timestep = patched_record_timestep
         monitor.extract_point_values = patched_extract_point_values
 
-        # Patch the reset_data method for 1-plane (u, v, w only)
         def patched_reset_data():
             """Reset all monitoring data for 1-plane."""
             monitor.time_series_data = {}
@@ -518,7 +504,7 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
                     monitor.time_series_data[split][mode] = {
                         "timesteps": [],
                     }
-                    # Initialize data storage for each component and point (u, v, w only)
+                    # Initialize data storage for each component and point
                     for component in ["u", "v", "w"]:
                         monitor.time_series_data[split][mode][f"{component}_pred"] = [
                             [] for _ in range(len(monitor.monitor_points))
@@ -530,21 +516,19 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
         monitor.reset_data = patched_reset_data
         monitor.reset_data()  # Initialize with 1-plane structure
 
-        # Patch plotting methods for 1-plane (u, v, w only)
         def patched_plot_point_time_series(point_idx, output_dir, split="test"):
-            """Plot time series for a specific point (1-plane version with u, v, w)."""
-            plane_idx, z_idx, x_idx = monitor.monitor_points[point_idx]
-            y_pos = 54  # Y-slice position for 1-plane
+            """Plot time series for a specific point (1-plane version)."""
+            z_idx, x_idx = monitor.monitor_points[point_idx]
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
 
             fig, axes = plt.subplots(1, 3, figsize=(18, 5))
             fig.suptitle(
-                f"Time Series at Plane {plane_idx} (y={y_pos}), Point ({z_idx}, {x_idx}) - {split.upper()} Data",
+                f"Time Series at y={self.plane_y_position}, Point ({z_idx}, {x_idx}) - {split.upper()} Data",
                 fontsize=16,
             )
 
-            components = ["u", "v", "w"]  # Only u, v, w for 1-plane
+            components = ["u", "v", "w"]
             colors = {"ar": "blue", "tf": "red"}
             labels = {"ar": "Autoregressive", "tf": "Teacher Forcing"}
 
@@ -605,7 +589,7 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
 
             plt.tight_layout()
             output_path = (
-                output_dir / f"time_series_point_{point_idx}_plane{plane_idx}_y{y_pos}_z{z_idx}_x{x_idx}_{split}.png"
+                output_dir / f"time_series_point_{point_idx}_y{self.plane_y_position}_z{z_idx}_x{x_idx}_{split}.png"
             )
             plt.savefig(output_path, dpi=150, bbox_inches="tight")
             plt.close()
@@ -613,9 +597,8 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
 
         monitor.plot_point_time_series = patched_plot_point_time_series
 
-        # Patch the plot_all_points_component method for 1-plane
         def patched_plot_all_points_component(component, output_dir, split="test", mode="ar"):
-            """Plot all points for a specific component (1-plane version with u, v, w)."""
+            """Plot all points for a specific component (1-plane version)."""
             if component not in ["u", "v", "w"]:
                 raise ValueError(f"Component must be one of ['u', 'v', 'w'], got {component}")
 
@@ -629,7 +612,7 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
 
             colors = plt.cm.tab10(np.linspace(0, 1, len(monitor.monitor_points)))
 
-            for i, (plane_idx, z_idx, x_idx) in enumerate(monitor.monitor_points):
+            for i, (z_idx, x_idx) in enumerate(monitor.monitor_points):
                 if split in monitor.time_series_data and mode in monitor.time_series_data[split]:
                     timesteps = monitor.time_series_data[split][mode]["timesteps"]
                     pred_values = monitor.time_series_data[split][mode][f"{component}_pred"][i]
@@ -641,7 +624,7 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
                             timesteps,
                             pred_values,
                             color=colors[i],
-                            label=f"P{plane_idx}({z_idx},{x_idx}) Pred",
+                            label=f"({z_idx},{x_idx}) Pred",
                             linestyle="-",
                             marker="o",
                             markersize=2,
@@ -657,7 +640,7 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
                                 gt_times,
                                 gt_vals,
                                 color=colors[i],
-                                label=f"P{plane_idx}({z_idx},{x_idx}) GT",
+                                label=f"({z_idx},{x_idx}) GT",
                                 linestyle="--",
                                 marker="s",
                                 markersize=2,
@@ -675,9 +658,8 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
 
         monitor.plot_all_points_component = patched_plot_all_points_component
 
-        # Patch the generate_all_plots method for 1-plane
         def patched_generate_all_plots(output_dir, split="test"):
-            """Generate all time series plots (1-plane version with u, v, w)."""
+            """Generate all time series plots (1-plane version)."""
             print(f"Generating time series plots for {len(monitor.monitor_points)} monitoring points...")
 
             ts_dir = Path(output_dir) / "time_series_plots"
@@ -687,7 +669,7 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
             for i in range(len(monitor.monitor_points)):
                 monitor.plot_point_time_series(i, ts_dir, split)
 
-            # Plot all points for each component (u, v, w only)
+            # Plot all points for each component
             for component in ["u", "v", "w"]:
                 for mode in ["ar", "tf"]:
                     monitor.plot_all_points_component(component, ts_dir, split, mode)
@@ -697,9 +679,8 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
 
         monitor.generate_all_plots = patched_generate_all_plots
 
-        # Patch the save_data_csv method for 1-plane
         def patched_save_data_csv(output_dir):
-            """Save time series data as CSV files (1-plane version with u, v, w)."""
+            """Save time series data as CSV files (1-plane version)."""
             data_dir = Path(output_dir) / "time_series_data"
             data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -708,18 +689,17 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
                     if split in monitor.time_series_data and mode in monitor.time_series_data[split]:
                         data_dict = {"timestep": monitor.time_series_data[split][mode]["timesteps"]}
 
-                        # Add data for each point and component (u, v, w only)
+                        # Add data for each point and component
                         num_timesteps = len(data_dict["timestep"])
                         for component in ["u", "v", "w"]:
-                            for i, (plane_idx, z_idx, x_idx) in enumerate(monitor.monitor_points):
-                                y_pos = 54  # Y-slice position for 1-plane
+                            for i, (z_idx, x_idx) in enumerate(monitor.monitor_points):
                                 # Prediction data
-                                pred_col_name = f"{component}_pred_point{i}_plane{plane_idx}_y{y_pos}_z{z_idx}_x{x_idx}"
+                                pred_col_name = f"{component}_pred_point{i}_y{self.plane_y_position}_z{z_idx}_x{x_idx}"
                                 pred_data = monitor.time_series_data[split][mode][f"{component}_pred"][i]
                                 data_dict[pred_col_name] = pred_data + [None] * (num_timesteps - len(pred_data))
 
                                 # Ground truth data
-                                gt_col_name = f"{component}_gt_point{i}_plane{plane_idx}_y{y_pos}_z{z_idx}_x{x_idx}"
+                                gt_col_name = f"{component}_gt_point{i}_y{self.plane_y_position}_z{z_idx}_x{x_idx}"
                                 gt_data = monitor.time_series_data[split][mode][f"{component}_gt"][i]
                                 data_dict[gt_col_name] = gt_data + [None] * (num_timesteps - len(gt_data))
 
@@ -746,8 +726,8 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
         sample_output_dir = self.output_dir / f"{split}_sample_{sample_idx}"
         sample_output_dir.mkdir(exist_ok=True)
 
-        # Create single-plane comparison plot (3 fields: u, v, w)
-        fig, axes = plt.subplots(1, self.num_fields_per_plane, figsize=(15, 5))
+        # Create single-plane comparison plot
+        fig, axes = plt.subplots(1, self.num_fields_per_plane, figsize=(16, 5))
         fig.suptitle(f"1-Plane Prediction vs Target (Sample {sample_idx}, {split})", fontsize=16)
 
         for field_idx in range(self.num_fields_per_plane):
@@ -755,13 +735,13 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
 
             # Get prediction and target for last time step
             pred_field = predictions[-1, field_idx].numpy()
-            target_field = targets[-1, field_idx].numpy() if targets is not None else pred_field
+            target_field = targets[-1, field_idx].numpy()
 
             # Create side-by-side comparison
             combined = np.concatenate([pred_field, target_field], axis=1)
 
             im = ax.imshow(combined, cmap="RdBu_r", vmin=-2, vmax=2)
-            ax.set_title(f"{self.field_names[field_idx].upper()} (y={self.plane_y_position})")
+            ax.set_title(f"y={self.plane_y_position} - {self.field_names[field_idx]}")
             ax.set_xlabel("Prediction | Target")
             ax.axis("off")
 
@@ -807,26 +787,4 @@ class Flow1PlaneEvaluator(BaseFlowEvaluator):
         if hasattr(self, "metrics"):
             self.metrics.compute_1plane_specific_metrics()
 
-        # Create 1-plane comparison visualizations
-        self._create_single_plane_analysis()
-
         print("1-plane analysis completed!")
-
-    def _create_single_plane_analysis(self):
-        """Create analysis for single plane data."""
-        import matplotlib.pyplot as plt
-
-        print("Creating single-plane analysis...")
-
-        # Placeholder for now - would implement single-plane specific analysis
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.text(0.5, 0.5, "Single-plane analysis\nComing soon!", ha="center", va="center", fontsize=16)
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
-        ax.axis("off")
-
-        plot_path = self.output_dir / "single_plane_analysis.png"
-        plt.savefig(plot_path, dpi=300, bbox_inches="tight")
-        plt.close()
-
-        print(f"Single-plane analysis saved: {plot_path}")
