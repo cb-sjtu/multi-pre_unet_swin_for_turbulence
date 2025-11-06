@@ -100,7 +100,7 @@ class FlowSequence1PlaneDataset(Dataset):
         # Each sample needs input_length + max_k_steps frames with time_stride spacing
         # Total span: (input_length + max_k_steps - 1) * time_stride + 1
         # Example: input=5, target=1, stride=2 -> need frames at [0,2,4,6,8,10] -> span=11
-        total_frames_needed = (self.input_length + self.max_k_steps - 1) * self.time_stride + 1
+        total_frames_needed = (self.input_length + self.prediction_step_size - 1) * self.time_stride + 1
         self.num_samples = self.num_frames - total_frames_needed + 1
 
         if self.num_samples <= 0:
