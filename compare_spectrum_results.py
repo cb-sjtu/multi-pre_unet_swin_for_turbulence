@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-多模型能量谱对比程序
+多模型能量谱对比程序 - 1平面3通道版本
 
-用于对比不同模型在 evaluation_results 文件夹下的能量谱结果。
+用于对比不同模型在 evaluation_results 文件夹下的能量谱结果（1-plane, 3-channel: u, v, w）。
 可以同时对比多个模型的预测结果与真值（Ground Truth）。
 
 Usage:
     python compare_spectrum_results.py \
-        evaluation_results_2025-10-27_22-56-39-791052 \
-        evaluation_results_2025-10-26_12-14-53-336652 \
-        --model-names "LSTM" "Swin" \
-        --output-dir comparison_results
+        evaluation_results_2025-11-05_15-18-05-369060 \
+        evaluation_results_2025-11-05_20-32-55-526491 \
+        evaluation_results_2025-11-02_14-11-12-461089 \
+        --model-names "FNO" "LSTM" "Swin Transformer" \
+        --output-dir spectrum_comparison_results
 """
 
 import argparse
@@ -55,24 +56,25 @@ class SpectrumComparator:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # 3-plane 配置
-        self.planes = [0, 1, 2]
-        self.fields = ["u", "v", "w", "p"]
+        # 1-plane 3-channel 配置
+        self.fields = ["u", "v", "w"]  # 只有 u, v, w，没有 pressure
+        self.y_slice = 54  # 固定的 y 切片位置
         self.spectrum_types = ["kx", "kz", "2d"]  # 1D kx, 1D kz, 2D spectrum
 
-        print("初始化能量谱对比器")
+        print("初始化能量谱对比器 (1-plane 3-channel)")
         print(f"  模型数量: {len(self.model_names)}")
         print(f"  模型名称: {', '.join(self.model_names)}")
+        print(f"  字段: {', '.join(self.fields)}")
+        print(f"  Y-slice: {self.y_slice}")
         print(f"  输出目录: {self.output_dir}")
 
-    def load_spectrum_data(self, result_dir, plane, field, spectrum_type, data_type="prediction"):
+    def load_spectrum_data(self, result_dir, field, spectrum_type, data_type="prediction"):
         """
-        加载能量谱数据
+        加载能量谱数据 (1-plane 格式)
 
         Args:
             result_dir: 结果目录
-            plane: 平面索引 (0, 1, 2)
-            field: 字段名 ('u', 'v', 'w', 'p')
+            field: 字段名 ('u', 'v', 'w')
             spectrum_type: 谱类型 ('kx', 'kz', '2d')
             data_type: 数据类型 ('prediction' or 'ground_truth')
 
@@ -80,7 +82,9 @@ class SpectrumComparator:
             numpy array 或 None（如果文件不存在）
         """
         full_path = self.base_dir / result_dir
-        filename = f"spectrum_{data_type}_plane{plane}_{field}_{spectrum_type}.npy"
+
+        # 1-plane 格式: spectrum_{data_type}_{field}_y54_{spectrum_type}.npy
+        filename = f"spectrum_{data_type}_{field}_y{self.y_slice}_{spectrum_type}.npy"
         filepath = full_path / filename
 
         if not filepath.exists():
@@ -94,21 +98,20 @@ class SpectrumComparator:
             print(f"  ❌ 加载失败 {filename}: {e}")
             return None
 
-    def compare_1d_spectrum(self, plane, field, spectrum_type="kx"):
+    def compare_1d_spectrum(self, field, spectrum_type="kx"):
         """
-        对比 1D 能量谱（kx 或 kz）
+        对比 1D 能量谱（kx 或 kz）- 1平面版本
 
         Args:
-            plane: 平面索引
-            field: 字段名
+            field: 字段名 ('u', 'v', 'w')
             spectrum_type: 'kx' 或 'kz'
         """
-        print(f"\n对比 1D 谱: Plane{plane} - {field} - {spectrum_type}")
+        print(f"\n对比 1D 谱: {field} (y={self.y_slice}) - {spectrum_type}")
 
         fig, ax = plt.subplots(figsize=(10, 6))
 
         # 加载并绘制 Ground Truth（只需要从第一个结果目录加载）
-        gt_data = self.load_spectrum_data(self.result_dirs[0], plane, field, spectrum_type, "ground_truth")
+        gt_data = self.load_spectrum_data(self.result_dirs[0], field, spectrum_type, "ground_truth")
 
         if gt_data is not None:
             # 计算真实的波数坐标
@@ -139,7 +142,7 @@ class SpectrumComparator:
                 colors[i] = default_colors[i]
 
         for i, (result_dir, model_name) in enumerate(zip(self.result_dirs, self.model_names, strict=False)):
-            pred_data = self.load_spectrum_data(result_dir, plane, field, spectrum_type, "prediction")
+            pred_data = self.load_spectrum_data(result_dir, field, spectrum_type, "prediction")
 
             if pred_data is not None:
                 # 计算真实的波数坐标（只取正频率）
@@ -162,34 +165,35 @@ class SpectrumComparator:
 
         ax.set_xlabel(f"Wavenumber {spectrum_type}", fontsize=12)
         ax.set_ylabel("Energy", fontsize=12)
-        ax.set_title(f"Energy Spectrum Comparison - Plane{plane} ({field}) - {spectrum_type.upper()}", fontsize=14)
+        ax.set_title(
+            f"Energy Spectrum Comparison - {field.upper()} (y={self.y_slice}) - {spectrum_type.upper()}", fontsize=14
+        )
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3, which="both", linestyle=":")
 
         # 保存图片
-        output_file = self.output_dir / f"comparison_1d_plane{plane}_{field}_{spectrum_type}.png"
+        output_file = self.output_dir / f"comparison_1d_{field}_{spectrum_type}.png"
         plt.tight_layout()
         plt.savefig(output_file, dpi=150, bbox_inches="tight")
         plt.close()
 
         print(f"  ✓ 保存: {output_file}")
 
-    def compare_2d_spectrum(self, plane, field):
+    def compare_2d_spectrum(self, field):
         """
-        对比 2D 能量谱
+        对比 2D 能量谱 - 1平面版本
 
         Args:
-            plane: 平面索引
-            field: 字段名
+            field: 字段名 ('u', 'v', 'w')
         """
-        print(f"\n对比 2D 谱: Plane{plane} - {field}")
+        print(f"\n对比 2D 谱: {field} (y={self.y_slice})")
 
         # 加载数据
-        gt_data = self.load_spectrum_data(self.result_dirs[0], plane, field, "2d", "ground_truth")
+        gt_data = self.load_spectrum_data(self.result_dirs[0], field, "2d", "ground_truth")
 
         pred_data_list = []
         for result_dir in self.result_dirs:
-            pred_data = self.load_spectrum_data(result_dir, plane, field, "2d", "prediction")
+            pred_data = self.load_spectrum_data(result_dir, field, "2d", "prediction")
             pred_data_list.append(pred_data)
 
         # 检查数据有效性
@@ -265,39 +269,38 @@ class SpectrumComparator:
         for idx in range(plot_idx, len(axes_flat)):
             axes_flat[idx].axis("off")
 
-        plt.suptitle(f"2D Energy Spectrum Comparison - Plane{plane} ({field})", fontsize=14, y=1.02)
+        plt.suptitle(f"2D Energy Spectrum Comparison - {field.upper()} (y={self.y_slice})", fontsize=14, y=1.02)
         plt.tight_layout()
 
         # 保存图片
-        output_file = self.output_dir / f"comparison_2d_plane{plane}_{field}.png"
+        output_file = self.output_dir / f"comparison_2d_{field}.png"
         plt.savefig(output_file, dpi=150, bbox_inches="tight")
         plt.close()
 
         print(f"  ✓ 保存: {output_file}")
 
-    def compare_combined_spectrum(self, plane, field):
+    def compare_combined_spectrum(self, field):
         """
-        对比组合能量谱（1D kx + kz + 2D，包含真值、所有模型预测和相对误差）
+        对比组合能量谱（1D kx + kz + 2D，包含真值、所有模型预测和相对误差）- 1平面版本
 
         Args:
-            plane: 平面索引
-            field: 字段名
+            field: 字段名 ('u', 'v', 'w')
         """
-        print(f"\n对比组合谱: Plane{plane} - {field}")
+        print(f"\n对比组合谱: {field} (y={self.y_slice})")
 
         # 加载所有数据
-        gt_kx = self.load_spectrum_data(self.result_dirs[0], plane, field, "kx", "ground_truth")
-        gt_kz = self.load_spectrum_data(self.result_dirs[0], plane, field, "kz", "ground_truth")
-        gt_2d = self.load_spectrum_data(self.result_dirs[0], plane, field, "2d", "ground_truth")
+        gt_kx = self.load_spectrum_data(self.result_dirs[0], field, "kx", "ground_truth")
+        gt_kz = self.load_spectrum_data(self.result_dirs[0], field, "kz", "ground_truth")
+        gt_2d = self.load_spectrum_data(self.result_dirs[0], field, "2d", "ground_truth")
 
         pred_kx_list = []
         pred_kz_list = []
         pred_2d_list = []
 
         for result_dir in self.result_dirs:
-            pred_kx_list.append(self.load_spectrum_data(result_dir, plane, field, "kx", "prediction"))
-            pred_kz_list.append(self.load_spectrum_data(result_dir, plane, field, "kz", "prediction"))
-            pred_2d_list.append(self.load_spectrum_data(result_dir, plane, field, "2d", "prediction"))
+            pred_kx_list.append(self.load_spectrum_data(result_dir, field, "kx", "prediction"))
+            pred_kz_list.append(self.load_spectrum_data(result_dir, field, "kz", "prediction"))
+            pred_2d_list.append(self.load_spectrum_data(result_dir, field, "2d", "prediction"))
 
         # 计算需要的子图数量：1D kx + 1D kz + GT 2D + N个模型的2D预测 + N个相对误差
         # 布局：第一行 kx, kz, GT；第二行 模型预测；第三行 相对误差
@@ -382,6 +385,8 @@ class SpectrumComparator:
 
         # --- 子图 (0,2): Ground Truth 2D 谱 ---
         ax_gt = fig.add_subplot(gs[0, 2])
+        # 初始化 extent_2d，即使没有 gt_2d 也要定义
+        extent_2d = None
         if gt_2d is not None:
             # 计算2D谱的波数坐标范围
             H, W = gt_2d.shape
@@ -397,6 +402,10 @@ class SpectrumComparator:
             ax_gt.set_ylabel("kz", fontsize=10)
             cbar_gt = plt.colorbar(im_gt, ax=ax_gt, fraction=0.046, pad=0.04)
             cbar_gt.set_label("log10(Energy)", fontsize=9)
+        else:
+            ax_gt.text(0.5, 0.5, "No GT Data", ha="center", va="center", fontsize=12)
+            ax_gt.set_title("Ground Truth\n2D Spectrum", fontsize=11)
+            ax_gt.axis("off")
 
         # 隐藏第1行多余的子图
         for col_idx in range(3, n_cols):
@@ -414,12 +423,21 @@ class SpectrumComparator:
         for i, (pred_2d, model_name) in enumerate(zip(pred_2d_list, self.model_names, strict=False)):
             ax_pred = fig.add_subplot(gs[1, i])
             if pred_2d is not None:
+                # 如果没有 GT 的 extent_2d，根据预测数据计算一个
+                if extent_2d is None:
+                    H, W = pred_2d.shape
+                    kx_2d = np.fft.fftfreq(W, 1.0)
+                    kz_2d = np.fft.fftfreq(H, 1.0)
+                    pred_extent = [kx_2d.min(), kx_2d.max(), kz_2d.min(), kz_2d.max()]
+                else:
+                    pred_extent = extent_2d
+
                 im_pred = ax_pred.imshow(
                     np.log10(pred_2d + 1e-20),
                     cmap="viridis",
                     aspect="auto",
                     origin="lower",
-                    extent=extent_2d,
+                    extent=pred_extent,
                     vmin=vmin_2d,
                     vmax=vmax_2d,
                 )
@@ -484,16 +502,16 @@ class SpectrumComparator:
             ax_empty.axis("off")
 
         plt.suptitle(
-            f"Energy Spectrum Comparison - Plane{plane} ({field.upper()})\n"
-            f"Row 1: 1D Spectra + GT 2D | Row 2: Model Predictions (GT colorbar range) |\
-                  Row 3: Relative Errors (unified range)",
+            f"Energy Spectrum Comparison - {field.upper()} (y={self.y_slice})\n"
+            f"Row 1: 1D Spectra + GT 2D | Row 2: Model Predictions  \
+              (GT colorbar range) | Row 3: Relative Errors (unified range)",
             fontsize=13,
             fontweight="bold",
             y=0.995,
         )
 
         # 保存图片
-        output_file = self.output_dir / f"comparison_combined_plane{plane}_{field}.png"
+        output_file = self.output_dir / f"comparison_combined_{field}.png"
         plt.savefig(output_file, dpi=150, bbox_inches="tight")
         plt.close()
 
@@ -501,7 +519,7 @@ class SpectrumComparator:
 
     def run_all_comparisons(self, spectrum_mode="combined"):
         """
-        运行所有对比
+        运行所有对比 - 1平面版本
 
         Args:
             spectrum_mode: 对比模式
@@ -516,20 +534,19 @@ class SpectrumComparator:
 
         total_plots = 0
 
-        for plane in self.planes:
-            for field in self.fields:
-                if spectrum_mode in ["combined", "all"]:
-                    self.compare_combined_spectrum(plane, field)
-                    total_plots += 1
+        for field in self.fields:
+            if spectrum_mode in ["combined", "all"]:
+                self.compare_combined_spectrum(field)
+                total_plots += 1
 
-                if spectrum_mode in ["1d", "all"]:
-                    self.compare_1d_spectrum(plane, field, "kx")
-                    self.compare_1d_spectrum(plane, field, "kz")
-                    total_plots += 2
+            if spectrum_mode in ["1d", "all"]:
+                self.compare_1d_spectrum(field, "kx")
+                self.compare_1d_spectrum(field, "kz")
+                total_plots += 2
 
-                if spectrum_mode in ["2d", "all"]:
-                    self.compare_2d_spectrum(plane, field)
-                    total_plots += 1
+            if spectrum_mode in ["2d", "all"]:
+                self.compare_2d_spectrum(field)
+                total_plots += 1
 
         print(f"\n{'=' * 60}")
         print("✅ 对比完成！")
@@ -537,7 +554,7 @@ class SpectrumComparator:
         print(f"  生成图片数量: {total_plots}")
         print(f"  输出目录: {self.output_dir}")
         print("\n对比的配置:")
-        print(f"  - 平面: {len(self.planes)} 个 (plane 0, 1, 2)")
+        print(f"  - Y-slice: {self.y_slice}")
         print(f"  - 字段: {len(self.fields)} 个 ({', '.join(self.fields)})")
         print(f"  - 模型: {len(self.model_names)} 个 ({', '.join(self.model_names)})")
 
