@@ -875,8 +875,8 @@ def main():
     else:
         # Default to the hardcoded path if no argument provided
         checkpoint_path = (
-            "/home/sh/CB/icon-thewell-dev/logs/flow_swin_1plane/runs"
-            "/2025-11-11_15-06-05-241904/checkpoints/step_48900.ckpt"
+            "/home/sh/CB/icon-thewell-dev/logs/flow_swin_1plane/runs/"
+            "2025-11-19_10-12-28-981490/checkpoints/step_49800.ckpt"
         )
 
     # Load model config (simplified for direct usage)
